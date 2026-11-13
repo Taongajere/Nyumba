@@ -23,6 +23,8 @@ from apps.properties.api import (
     register_user,
     login_user,
     create_listing,
+    create_booking, 
+    create_inquiry,
 )
 
 router = DefaultRouter()
@@ -33,5 +35,7 @@ urlpatterns = [
     path("api/register/", register_user),
     path("api/login/", login_user),
     path("api/listings/create/", create_listing),
+    path("api/listings/<int:listing_id>/inquire/", create_inquiry),
+    path("api/listings/<int:listing_id>/book/", create_booking),
     path("api/", include(router.urls)),
 ]

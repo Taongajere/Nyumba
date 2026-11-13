@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import PropertyActionBox from "./PropertyActionBox";
 
 // 1. The Waiter: Fetches ONE specific listing by its ID number from Django
 async function getSingleListing(id: string) {
@@ -90,13 +91,8 @@ async function PropertyDetails({
           </div>
         </div>
 
-        {/* Placeholder Enquiry Call-to-Action (We wire this up in Phase 5!) */}
-        <div className="mt-8 rounded-xl bg-[#133a2a] p-6 text-white">
-          <h2 className="text-lg font-bold">Interested in this property?</h2>
-          <p className="mt-1 text-sm text-white/80">
-            Enquiry & viewing requests are coming soon in the next phase.
-          </p>
-        </div>
+        {/* Live Enquiry or Short-Stay Booking Form */}
+        <PropertyActionBox listing={listing} />{/* Placeholder Enquiry Call-to-Action (We wire this up in Phase 5!) */}
       </div>
     </div>
   );
