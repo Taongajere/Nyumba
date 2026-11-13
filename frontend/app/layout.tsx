@@ -38,12 +38,24 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             Nyumba<span className="text-[#d4a843]">.</span>
           </Link>
 
-          <nav className="flex items-center gap-6 text-sm font-semibold">
+          <nav className="flex items-center gap-5 text-sm font-semibold">
             <Link
               href="/properties"
               className="text-[#133a2a] hover:text-[#9a741c]"
             >
-              Browse Properties
+              Browse
+            </Link>
+            <Link
+              href="/post-property"
+              className="rounded-lg bg-[#133a2a] px-3.5 py-2 text-white hover:bg-[#1a4d38]"
+            >
+              + List Property
+            </Link>
+            <Link
+              href="/login"
+              className="text-[#9a741c] hover:underline"
+            >
+              Log in
             </Link>
           </nav>
         </div>

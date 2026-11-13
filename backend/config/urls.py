@@ -16,10 +16,22 @@ Including another URLconf
 """
 
 from django.contrib import admin
-from django.urls import path
-from django.urls import include
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from apps.properties.api import (
+    ListingViewSet,
+    register_user,
+    login_user,
+    create_listing,
+)
+
+router = DefaultRouter()
+router.register(r"listings", ListingViewSet)
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path('api/', include('apps.properties.urls'))
+    path("api/register/", register_user),
+    path("api/login/", login_user),
+    path("api/listings/create/", create_listing),
+    path("api/", include(router.urls)),
 ]
