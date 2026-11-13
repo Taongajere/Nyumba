@@ -25,6 +25,8 @@ from apps.properties.api import (
     create_listing,
     create_booking, 
     create_inquiry,
+    owner_dashboard, 
+    update_booking_status,
 )
 
 router = DefaultRouter()
@@ -37,5 +39,7 @@ urlpatterns = [
     path("api/listings/create/", create_listing),
     path("api/listings/<int:listing_id>/inquire/", create_inquiry),
     path("api/listings/<int:listing_id>/book/", create_booking),
+    path("api/dashboard/", owner_dashboard),
+    path("api/bookings/<int:booking_id>/status/", update_booking_status),
     path("api/", include(router.urls)),
 ]

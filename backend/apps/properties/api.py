@@ -240,3 +240,100 @@ def create_booking(request, listing_id):
         },
         status=status.HTTP_201_CREATED,
     )
+
+# --- NEW: 6. Owner Dashboard Data (Only shows the logged-in owner's stuff!) ---
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def owner_dashboard(request):
+    # 1. My listings (pending, approved, or rejected)
+    my_listings = Listing.objects.filter(property__owner=request.user).order_by("-id")
+    listings_data = ListingSerializer(my_listings, many=True).data
+
+    # 2. Enquiries sent to my listings
+    my_inquiries = Inquiry.objects.filter(
+        listing__property__owner=request.user
+    ).order_by("-created_at")
+    inquiries_data = [
+        {
+            "id": inq.id,
+            "property_title": inq.listing.property.title,
+            "name": inq.name,
+            "phone": inq.phone,
+            "message": inq.message,
+            "created_at": inq.created_at.strftime("%Y-%m-%d %H:%M"),
+        }
+        for inq in my_inquiries
+    ]
+
+    # 3. Short-stay bookings on my listings (with commission breakdown)
+    my_bookings = Booking.objects.filter(
+        listing__property__owner=request.user
+    ).order_by("-created_at")
+    bookings_data = []
+    total_gross = Decimal("0.00")
+    total_commission = Decimal("0.00")
+
+    for bk in my_bookings:
+        comm_amount = bk.commission.amount if hasattr(bk, "commission") else Decimal("0.00")
+        if bk.status != "cancelled":
+            total_gross += bk.total_amount
+            total_commission += comm_amount
+
+        bookings_data.append(
+            {
+                "id": bk.id,
+                "property_title": bk.listing.property.title,
+                "guest_name": bk.guest_name,
+                "guest_phone": bk.guest_phone,
+                "check_in": str(bk.check_in),
+                "check_out": str(bk.check_out),
+                "total_amount": str(bk.total_amount),
+                "commission_amount": str(comm_amount),
+                "status": bk.status,
+            }
+        )
+
+    net_earnings = total_gross - total_commission
+
+    return Response(
+        {
+            "listings": listings_data,
+            "inquiries": inquiries_data,
+            "bookings": bookings_data,
+            "earnings": {
+                "gross": str(total_gross),
+                "commission": str(total_commission),
+                "net": str(net_earnings),
+            },
+        }
+    )
+
+
+# --- NEW: 7. Confirm or Cancel a Booking Request ---
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def update_booking_status(request, booking_id):
+    try:
+        booking = Booking.objects.get(
+            id=booking_id, listing__property__owner=request.user
+        )
+    except Booking.DoesNotExist:
+        return Response(
+            {"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND
+        )
+
+    new_status = request.data.get("status")
+    if new_status not in ["confirmed", "cancelled"]:
+        return Response(
+            {"error": "Invalid status."}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    booking.status = new_status
+    booking.save()
+
+    # If cancelled, mark the commission record as refunded too
+    if new_status == "cancelled" and hasattr(booking, "commission"):
+        booking.commission.status = "refunded"
+        booking.commission.save()
+
+    return Response({"message": f"Booking marked as {new_status}."})
