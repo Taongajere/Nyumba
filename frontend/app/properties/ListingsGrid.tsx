@@ -2,6 +2,17 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
+
+// Load the map only in the browser so Leaflet never crashes on the server
+const LusakaMap = dynamic(() => import("./LusakaMap"), {
+  ssr: false,
+  loading: () => (
+    <div className="mb-8 flex h-80 items-center justify-center rounded-2xl border border-[#133a2a]/15 bg-white text-sm text-stone-500">
+      Loading Lusaka map...
+    </div>
+  ),
+});
 
 const KIND_FILTERS = [
   { label: "All", value: "all" },
@@ -167,6 +178,13 @@ export default function ListingsGrid({ listings }: { listings: any[] }) {
           </select>
         </div>
       </div>
+      
+      {/* Interactive Lusaka Map */}
+      <LusakaMap
+        listings={filteredListings}
+        landmark={activeLandmark}
+        radiusKm={radiusKm}
+      />
 
       {/* 3. Matching Property Cards */}
       {filteredListings.length === 0 ? (
