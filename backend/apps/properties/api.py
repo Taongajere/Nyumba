@@ -12,7 +12,15 @@ from .models import Property, Listing
 class PropertySerializer(serializers.ModelSerializer):
     class Meta:
         model = Property
-        fields = ["id", "title", "bedrooms", "address"]
+        fields = [
+            "id",
+            "title",
+            "bedrooms",
+            "address",
+            "neighbourhood",
+            "latitude",
+            'longitude',
+        ]
 
 
 class ListingSerializer(serializers.ModelSerializer):
@@ -76,6 +84,9 @@ def login_user(request):
 def create_listing(request):
     title = request.data.get("title", "").strip()
     address = request.data.get("address", "").strip()
+    neighbourhood = request.data.get("neighbourhood", "").strip()
+    latitude = request.data.get("latitude")
+    longitude = request.data.get("longitude")
     bedrooms = request.data.get("bedrooms", 1)
     kind = request.data.get("kind", "rent")
     price = request.data.get("price")
@@ -86,15 +97,16 @@ def create_listing(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Create the physical house owned by the logged-in user
     prop = Property.objects.create(
         owner=request.user,
         title=title,
         address=address,
+        neighbourhood=neighbourhood,
+        latitude=float(latitude) if latitude else None,
+        longitude=float(longitude) if longitude else None,
         bedrooms=int(bedrooms),
     )
 
-    # Create the advert (starts as "pending" until Admin approves it)
     listing = Listing.objects.create(
         property=prop,
         kind=kind,

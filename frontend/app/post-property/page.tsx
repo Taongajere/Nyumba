@@ -12,6 +12,7 @@ export default function PostPropertyPage() {
   // Form fields
   const [title, setTitle] = useState("");
   const [address, setAddress] = useState("");
+  const [neighbourhood, setNeighbourhood] = useState("Kabulonga");
   const [bedrooms, setBedrooms] = useState(2);
   const [kind, setKind] = useState("rent");
   const [price, setPrice] = useState("");
@@ -53,6 +54,7 @@ export default function PostPropertyPage() {
         body: JSON.stringify({
           title,
           address,
+          neighbourhood,
           bedrooms,
           kind,
           price,
@@ -147,6 +149,22 @@ export default function PostPropertyPage() {
           </div>
 
           <div>
+            <div>
+              <label className="block text-sm font-semibold">Neighbourhood</label>
+              <select
+                value={neighbourhood}
+                onChange={(e) => setNeighbourhood(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-[#133a2a]/20 bg-white px-4 py-2.5 text-sm focus:border-[#133a2a] focus:outline-none"
+              >
+                <option value="Kabulonga">Kabulonga</option>
+                <option value="Woodlands">Woodlands</option>
+                <option value="Roma">Roma</option>
+                <option value="Ibex Hill">Ibex Hill</option>
+                <option value="Chilenje">Chilenje</option>
+                <option value="Olympia">Olympia</option>
+                <option value="Avondale">Avondale</option>
+              </select>
+            </div>
             <label className="block text-sm font-semibold">
               Lusaka Neighbourhood / Address
             </label>
