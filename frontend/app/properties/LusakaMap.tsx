@@ -1,12 +1,9 @@
 "use client";
 
-import { useEffect } from "react";
-import Link from "next/link";
-import { MapContainer, TileLayer, Marker, Popup, Circle, useMap } from "react-leaflet";
+import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-// Fix Leaflet's default pin icons in Next.js so they never show up as broken images
 const propertyIcon = L.divIcon({
   className: "",
   html: `<div style="background:#133a2a;color:#fff;border:2px solid #d4a843;border-radius:9999px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,0.3);">🏠</div>`,
@@ -21,15 +18,6 @@ const landmarkIcon = L.divIcon({
   iconAnchor: [13, 13],
 });
 
-// Helper that smoothly flies the map camera whenever you pick a new landmark
-function RecenterMap({ center }: { center: [number, number] }) {
-  const map = useMap();
-  useEffect(() => {
-    map.flyTo(center, 12, { duration: 0.8 });
-  }, [center, map]);
-  return null;
-}
-
 export default function LusakaMap({
   listings,
   landmark,
@@ -39,84 +27,92 @@ export default function LusakaMap({
   landmark: { name: string; lat: number | null; lng: number | null };
   radiusKm: number;
 }) {
-  // Default center: Lusaka city center (-15.4167, 28.2833)
-  const center: [number, number] =
-    landmark.lat !== null && landmark.lng !== null
-      ? [landmark.lat, landmark.lng]
-      : [-15.4167, 28.2833];
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const layerGroupRef = useRef<L.LayerGroup | null>(null);
 
-  // Only keep listings that have saved GPS coordinates
-  const pinnedListings = listings.filter(
-    (l) => l.property?.latitude != null && l.property?.longitude != null
-  );
+  // 1. Build the map table ONCE when the page opens, and clean it up properly on exit
+  useEffect(() => {
+    if (!containerRef.current || mapRef.current) return;
+
+    const map = L.map(containerRef.current, {
+      center: [-15.4167, 28.2833], // Lusaka center
+      zoom: 12,
+      scrollWheelZoom: false,
+    });
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(map);
+
+    const layerGroup = L.layerGroup().addTo(map);
+
+    mapRef.current = map;
+    layerGroupRef.current = layerGroup;
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      layerGroupRef.current = null;
+    };
+  }, []);
+
+  // 2. Redraw pins, circles, and camera position whenever filters or listings change
+  useEffect(() => {
+    const map = mapRef.current;
+    const layerGroup = layerGroupRef.current;
+    if (!map || !layerGroup) return;
+
+    // Clear old pins and circles before drawing updated ones
+    layerGroup.clearLayers();
+
+    // If a landmark is chosen, fly there and draw the radius circle
+    if (landmark.lat !== null && landmark.lng !== null) {
+      map.flyTo([landmark.lat, landmark.lng], 12, { duration: 0.8 });
+
+      L.marker([landmark.lat, landmark.lng], { icon: landmarkIcon })
+        .bindPopup(
+          `<strong>${landmark.name}</strong><br/>Showing homes within ${radiusKm} km`
+        )
+        .addTo(layerGroup);
+
+      L.circle([landmark.lat, landmark.lng], {
+        radius: radiusKm * 1000,
+        color: "#133a2a",
+        fillColor: "#133a2a",
+        fillOpacity: 0.1,
+      }).addTo(layerGroup);
+    } else {
+      map.flyTo([-15.4167, 28.2833], 12, { duration: 0.8 });
+    }
+
+    // Add a house pin for every matching property that has GPS coordinates
+    listings.forEach((listing) => {
+      const lat = listing.property?.latitude;
+      const lng = listing.property?.longitude;
+      if (lat == null || lng == null) return;
+
+      const title = listing.property?.title || "Untitled Property";
+      const price = Number(listing.price).toLocaleString();
+
+      L.marker([lat, lng], { icon: propertyIcon })
+        .bindPopup(
+          `<div style="font-size:13px;">
+            <strong style="color:#133a2a;">${title}</strong>
+            <p style="margin:4px 0;font-weight:bold;">K${price} (${listing.kind})</p>
+            <a href="/properties/${listing.id}" style="font-weight:600;color:#9a741c;text-decoration:underline;">
+              View details →
+            </a>
+          </div>`
+        )
+        .addTo(layerGroup);
+    });
+  }, [listings, landmark, radiusKm]);
 
   return (
     <div className="mb-8 overflow-hidden rounded-2xl border border-[#133a2a]/20 bg-white shadow-sm">
-      <div className="h-80 w-full sm:h-96">
-        <MapContainer
-          center={center}
-          zoom={12}
-          scrollWheelZoom={false}
-          className="h-full w-full z-0"
-        >
-          {/* Free OpenStreetMap street tiles */}
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
-
-          <RecenterMap center={center} />
-
-          {/* If a landmark is chosen, draw the landmark pin + search radius circle */}
-          {landmark.lat !== null && landmark.lng !== null && (
-            <>
-              <Marker position={[landmark.lat, landmark.lng]} icon={landmarkIcon}>
-                <Popup>
-                  <strong>{landmark.name}</strong>
-                  <br />
-                  Showing homes within {radiusKm} km
-                </Popup>
-              </Marker>
-
-              <Circle
-                center={[landmark.lat, landmark.lng]}
-                radius={radiusKm * 1000} // Leaflet measures radius in meters
-                pathOptions={{
-                  color: "#133a2a",
-                  fillColor: "#133a2a",
-                  fillOpacity: 0.1,
-                }}
-              />
-            </>
-          )}
-
-          {/* Drop a house pin for every matching property */}
-          {pinnedListings.map((listing) => (
-            <Marker
-              key={listing.id}
-              position={[listing.property.latitude, listing.property.longitude]}
-              icon={propertyIcon}
-            >
-              <Popup>
-                <div className="text-sm">
-                  <strong className="text-[#133a2a]">
-                    {listing.property.title}
-                  </strong>
-                  <p className="my-1 font-bold">
-                    K{Number(listing.price).toLocaleString()} ({listing.kind})
-                  </p>
-                  <Link
-                    href={`/properties/${listing.id}`}
-                    className="font-semibold text-[#9a741c] underline"
-                  >
-                    View details →
-                  </Link>
-                </div>
-              </Popup>
-            </Marker>
-          ))}
-        </MapContainer>
-      </div>
+      <div ref={containerRef} className="z-0 h-80 w-full sm:h-96" />
     </div>
   );
 }
