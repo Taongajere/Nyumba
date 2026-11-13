@@ -9,7 +9,6 @@ async function getSingleListing(id: string) {
     cache: "no-store",
   });
 
-  // If the ID doesn't exist (or isn't approved), show Next.js's clean 404 page
   if (res.status === 404) {
     notFound();
   }
@@ -27,7 +26,7 @@ async function PropertyDetails({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params; // Reads the ID number from the URL (e.g., "1")
+  const { id } = await params;
   const listing = await getSingleListing(id);
 
   return (
@@ -38,13 +37,40 @@ async function PropertyDetails({
       </div>
 
       <div className="p-6 sm:p-8">
-        {/* Top Row: Category Badge & Verified Tag */}
+        {/* Top Row: Category Badge & Admin Approval */}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="rounded-full bg-[#d4a843]/20 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-[#9a741c]">
             {listing.kind}
           </span>
           <span className="rounded-full bg-[#133a2a]/10 px-3 py-1 text-xs font-semibold text-[#133a2a]">
-            ✓ Approved Listing
+            ✓ Admin Reviewed
+          </span>
+        </div>
+
+        {/* Phase 7: Two-Lock Verification Badges */}
+        <div className="mt-3 flex flex-wrap gap-2">
+          <span
+            className={`rounded-lg px-3 py-1 text-xs font-semibold ${
+              listing.property?.owner_verified
+                ? "border border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "bg-stone-100 text-stone-500"
+            }`}
+          >
+            {listing.property?.owner_verified
+              ? "✓ Verified Owner ID"
+              : "○ Owner ID Unverified"}
+          </span>
+
+          <span
+            className={`rounded-lg px-3 py-1 text-xs font-semibold ${
+              listing.property?.property_verified
+                ? "border border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "bg-stone-100 text-stone-500"
+            }`}
+          >
+            {listing.property?.property_verified
+              ? "✓ Verified Property Ownership"
+              : "○ Ownership Docs Pending"}
           </span>
         </div>
 
@@ -92,7 +118,7 @@ async function PropertyDetails({
         </div>
 
         {/* Live Enquiry or Short-Stay Booking Form */}
-        <PropertyActionBox listing={listing} />{/* Placeholder Enquiry Call-to-Action (We wire this up in Phase 5!) */}
+        <PropertyActionBox listing={listing} />
       </div>
     </div>
   );

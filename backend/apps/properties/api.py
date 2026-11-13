@@ -23,6 +23,8 @@ class PropertySerializer(serializers.ModelSerializer):
             "neighbourhood",
             "latitude",
             'longitude',
+            "owner_verified",
+            "property_verified",
         ]
 
 

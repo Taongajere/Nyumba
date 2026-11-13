@@ -7,13 +7,15 @@ class Property(models.Model):   # the physical house
     title = models.CharField(max_length=120)
     bedrooms = models.PositiveIntegerField(default=1)
     address = models.CharField(max_length=200)
-    # --- NEW: Phase 4 Location Fields ---
     neighbourhood = models.CharField(max_length=100, blank=True, default="")
     latitude = models.FloatField(null=True, blank=True)
     longitude = models.FloatField(null=True, blank=True)
+    # --- NEW: Phase 7 Two-Lock Verification ---
+    owner_verified = models.BooleanField(default=False)
+    property_verified = models.BooleanField(default=False)
 
     def __str__(self):
-        return self.title 
+        return self.title
 
 class Listing(models.Model):    # The commercial advert
     KINDS = [("rent", "Rent"), ("sale", "Sale"), ("stay", "Short stay")]
@@ -62,3 +64,4 @@ class Commission(models.Model):  # Permanent Cash Register receipt for Nyumba's 
 
     def __str__(self):
         return f"K{self.amount} commission ({self.status})"
+
