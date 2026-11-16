@@ -40,7 +40,8 @@ export function BoardingCard({ house, active, onHover }: { house: BoardingHouse;
         </div>
         <HeartButton saved={houseIds.has(house.id)} onToggle={() => toggle({ houseId: house.id })} label={house.name} className="absolute top-3 right-3" />
       </div>
-      <div className="p-4">
+      {/* White panel rises over the photo with a rounded top edge, as in the reference */}
+      <div className="relative -mt-5 rounded-t-[20px] bg-surface p-4 pt-5">
         <p className="flex items-center gap-1.5 truncate text-[13px] text-muted-ink">
           <GraduationCap className="size-3.5 shrink-0" aria-hidden />
           {house.near_institution || `${house.property.neighbourhood}, ${house.property.town}`}

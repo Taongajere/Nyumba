@@ -96,6 +96,7 @@
   html {
     @apply font-sans antialiased;
     font-feature-settings: "ss01", "cv11";
+    font-size: 14px;
   }
   body {
     @apply bg-page text-ink;
@@ -121,9 +122,9 @@
 }
 
 @layer components {
-  /* Rounded white working area that sits on the grey page, like the reference */
+  /* White working area that fills the whole window, with square outer edges */
   .canvas {
-    @apply bg-surface sm:rounded-3xl sm:border sm:border-line;
+    @apply bg-surface;
   }
   .field {
     @apply h-11 w-full rounded-xl border border-line-strong bg-surface px-3.5 text-[15px] text-ink placeholder:text-muted-ink/70 transition focus:border-marker focus:ring-4 focus:ring-marker-soft focus:outline-none disabled:bg-subtle;

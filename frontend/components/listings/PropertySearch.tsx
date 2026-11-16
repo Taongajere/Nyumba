@@ -196,9 +196,9 @@ export function PropertySearch({ layout }: { layout: "map" | "grid" }) {
       {layout === "grid" ? (
         <div className="px-4 pt-2 pb-10 sm:px-6 lg:px-8">{results}</div>
       ) : (
-        <div className="flex flex-1 flex-col gap-5 px-4 pb-6 sm:px-6 lg:h-[calc(100dvh-10.5rem)] lg:flex-none lg:flex-row lg:px-8">
+        <div className="flex flex-1 flex-col gap-5 px-4 pb-6 sm:px-6 lg:h-[calc(100dvh-9rem)] lg:flex-none lg:flex-row lg:px-8">
           <div className={cn("flex-col gap-4 lg:flex lg:min-h-0 lg:w-[55%] lg:shrink-0", mobileView === "map" ? "flex" : "hidden")}>
-            <div className="relative h-[62dvh] overflow-hidden rounded-3xl border border-line lg:h-auto lg:min-h-0 lg:flex-1">
+            <div className="relative h-[78dvh] overflow-hidden rounded-3xl border border-line lg:h-auto lg:min-h-0 lg:flex-1">
               <ResultsMap
                 points={points}
                 activeId={activeId}
@@ -269,7 +269,8 @@ function ProviderPrompt() {
   const approved = me.provider_status === "approved";
   const pending = me.provider_status === "pending";
   return (
-    <div className="hidden items-center gap-5 rounded-2xl border border-line bg-subtle/60 px-6 py-5 lg:flex">
+    // Fixed height: the map above takes all remaining space, keeping the reference's map-to-card ratio.
+    <div className="hidden h-24 shrink-0 items-center gap-5 rounded-2xl border border-line bg-subtle/60 px-6 lg:flex">
       <div className="flex -space-x-3" aria-hidden>
         {["#2160e8", "#0f1d33", "#f5a524"].map((c, i) => (
           <span key={c} className="grid size-11 place-items-center rounded-full border-2 border-surface text-sm font-bold text-white" style={{ background: c }}>
@@ -279,12 +280,12 @@ function ProviderPrompt() {
       </div>
       <div className="min-w-0 flex-1">
         <p className="text-lg font-semibold text-ink">{approved ? "Manage your places" : "Rent out your place on Nyumba"}</p>
-        <p className="text-[15px] text-muted-ink">
+        <p className="truncate text-[15px] text-muted-ink">
           {approved
-            ? "Your listings, boarding houses and bookings are in provider tools."
+            ? "Your listings, boarding houses and bookings."
             : pending
-              ? "Your provider application is being reviewed. We'll notify you."
-              : "Landlords, agents and boarding-house operators list for free and pay commission only on bookings."}
+              ? "Your application is being reviewed."
+              : "List for free. Pay commission only on bookings."}
         </p>
       </div>
       {!pending && (

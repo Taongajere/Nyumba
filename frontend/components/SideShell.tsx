@@ -71,8 +71,8 @@ export function SideShell({
   );
 
   return (
-    <div className="min-h-dvh sm:p-4 lg:p-5">
-      <div className="canvas flex min-h-dvh sm:min-h-[calc(100dvh-2rem)] lg:min-h-[calc(100dvh-2.5rem)]">
+    <div className="min-h-dvh">
+      <div className="canvas flex min-h-dvh">
         <aside className="hidden w-64 shrink-0 border-r border-line lg:block">
           <div className="sticky top-0 max-h-dvh overflow-y-auto">{sidebar}</div>
         </aside>

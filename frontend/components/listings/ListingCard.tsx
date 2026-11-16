@@ -91,7 +91,8 @@ export function ListingCard({
         <HeartButton saved={saved} onToggle={() => toggle({ listingId: listing.id })} label={property.title} className="absolute top-3 right-3" />
       </div>
 
-      <div className="p-4">
+      {/* White panel rises over the photo with a rounded top edge, as in the reference */}
+      <div className="relative -mt-5 rounded-t-[20px] bg-surface p-4 pt-5">
         <div className="flex items-center justify-between gap-2">
           <p className="truncate text-[13px] text-muted-ink">
             {property.neighbourhood ? `${property.neighbourhood}, ${property.town}` : property.address}

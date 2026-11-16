@@ -31,7 +31,9 @@ async function token(username) {
   return (await res.json()).token;
 }
 
-const SHOTS = [
+// ONLY=02,06 captures just the shots whose file names contain those strings.
+const ONLY = process.env.ONLY ? process.env.ONLY.split(",") : null;
+const ALL_SHOTS = [
   { user: null, path: "/login", file: "01-login" },
   { user: "thandiwe", path: "/", file: "02-explore-map", wait: 9000 },
   { user: "thandiwe", path: "/properties", file: "03-properties-grid" },
@@ -57,6 +59,8 @@ const SHOTS = [
   { user: "thandiwe", path: "/", file: "23-mobile-explore", mobile: true, wait: 7000 },
   { user: "mwansa_rooms", path: "/provider", file: "24-mobile-provider", mobile: true },
 ];
+
+const SHOTS = ONLY ? ALL_SHOTS.filter((s) => ONLY.some((o) => s.file.includes(o))) : ALL_SHOTS;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

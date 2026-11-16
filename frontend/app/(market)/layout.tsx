@@ -8,8 +8,8 @@ import { Spinner } from "@/components/kit";
 export default function MarketLayout({ children }: LayoutProps<"/">) {
   return (
     <FavouritesProvider>
-      <div className="min-h-dvh sm:p-4 lg:p-5">
-        <div className="canvas flex min-h-dvh flex-col sm:min-h-[calc(100dvh-2rem)] lg:min-h-[calc(100dvh-2.5rem)]">
+      <div className="min-h-dvh">
+        <div className="canvas flex min-h-dvh flex-col">
           <Suspense fallback={<div className="h-[73px] border-b border-line" />}>
             <MarketHeader />
           </Suspense>
