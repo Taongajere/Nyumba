@@ -112,6 +112,76 @@ class ListingViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = ListingSerializer
 
 
+MAX_SEARCH_RESULTS = 200
+
+
+class ListingSearchSerializer(serializers.Serializer):
+    bbox = serializers.CharField(required=False)  # "minLng,minLat,maxLng,maxLat"
+    kind = serializers.ChoiceField(choices=Listing.KINDS, required=False)
+    min_price = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0"), required=False)
+    max_price = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0"), required=False)
+    bedrooms = serializers.IntegerField(min_value=1, required=False)
+    neighbourhood = serializers.CharField(max_length=100, required=False, allow_blank=True)
+
+    def validate_bbox(self, value):
+        try:
+            west, south, east, north = (float(part) for part in value.split(","))
+        except ValueError:
+            raise serializers.ValidationError("bbox must be minLng,minLat,maxLng,maxLat.")
+        if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+            raise serializers.ValidationError("bbox is out of range or inverted.")
+        return (west, south, east, north)
+
+    def validate(self, attrs):
+        low, high = attrs.get("min_price"), attrs.get("max_price")
+        if low is not None and high is not None and low > high:
+            raise serializers.ValidationError("min_price cannot be greater than max_price.")
+        return attrs
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def search_listings(request):
+    """Approved listings inside a map bounding box, with optional filters.
+
+    Returns the total match count and up to MAX_SEARCH_RESULTS listings.
+    """
+    serializer = ListingSearchSerializer(data=request.query_params)
+    if (error := validate_or_error(serializer)) is not None:
+        return error
+    data = serializer.validated_data
+
+    qs = Listing.objects.filter(status="approved").select_related("property")
+    if "bbox" in data:
+        west, south, east, north = data["bbox"]
+        qs = qs.filter(
+            property__latitude__gte=south,
+            property__latitude__lte=north,
+            property__longitude__gte=west,
+            property__longitude__lte=east,
+        )
+    if "kind" in data:
+        qs = qs.filter(kind=data["kind"])
+    if "min_price" in data:
+        qs = qs.filter(price__gte=data["min_price"])
+    if "max_price" in data:
+        qs = qs.filter(price__lte=data["max_price"])
+    if "bedrooms" in data:
+        qs = qs.filter(property__bedrooms__gte=data["bedrooms"])
+    if data.get("neighbourhood"):
+        qs = qs.filter(property__neighbourhood__iexact=data["neighbourhood"])
+
+    total = qs.count()
+    results = qs.order_by("-id")[:MAX_SEARCH_RESULTS]
+    return Response(
+        {
+            "count": total,
+            "truncated": total > MAX_SEARCH_RESULTS,
+            "results": ListingSerializer(results, many=True).data,
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Accounts
 # ---------------------------------------------------------------------------

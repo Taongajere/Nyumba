@@ -17,6 +17,7 @@ urlpatterns = [
     path("api/listings/create/", api.create_listing, name="listing-create"),
     path("api/listings/<int:listing_id>/inquire/", api.create_inquiry, name="listing-inquire"),
     path("api/listings/<int:listing_id>/book/", api.create_booking, name="listing-book"),
+    path("api/listings/search/", api.search_listings, name="listing-search"),
     path("api/", include(router.urls)),
     # Provider dashboard and bookings
     path("api/dashboard/", api.owner_dashboard, name="dashboard"),

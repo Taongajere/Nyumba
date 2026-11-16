@@ -6,7 +6,7 @@ from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import BoardingHouse, BoardingTenancy, Property, UserProfile
+from .models import BoardingHouse, BoardingTenancy, Listing, Property, UserProfile
 
 PASSWORD = "Sturdy-pass-2026"
 
@@ -352,3 +352,59 @@ class BoardingHouseTests(APITestCase):
         self.assertEqual(placement["active"]["boarding_house_name"], "Kalundu Boarders")
         self.assertEqual(placement["active"]["balance"], "400.00")
         self.assertEqual(placement["requests"], [])
+
+
+class ListingSearchTests(APITestCase):
+    """GET /api/listings/search/ filters by map bounds and listing attributes."""
+
+    def setUp(self):
+        owner = User.objects.create_user("agent", password=PASSWORD)
+        UserProfile.objects.create(user=owner, role="provider")
+
+        def make(title, lat, lng, neighbourhood, bedrooms, kind, price, status="approved"):
+            prop = Property.objects.create(
+                owner=owner, title=title, address="Plot", neighbourhood=neighbourhood,
+                bedrooms=bedrooms, latitude=lat, longitude=lng,
+            )
+            return Listing.objects.create(property=prop, kind=kind, price=Decimal(price), status=status)
+
+        # Coordinates roughly around Lusaka.
+        self.kabulonga = make("Kabulonga flat", -15.4300, 28.3200, "Kabulonga", 2, "rent", "4500")
+        self.roma = make("Roma house", -15.3950, 28.3150, "Roma", 4, "sale", "950000")
+        self.far = make("Kitwe house", -12.8000, 28.2000, "Kitwe", 3, "rent", "3000")
+        self.pending = make("Pending flat", -15.4100, 28.3000, "Kabulonga", 1, "rent", "2000", status="pending")
+        self.no_coords = make("No pin", None, None, "Olympia", 1, "rent", "1000")
+
+    def search(self, **params):
+        return self.client.get("/api/listings/search/", params)
+
+    def ids(self, res):
+        return {item["id"] for item in res.data["results"]}
+
+    def test_bbox_returns_only_listings_inside(self):
+        res = self.search(bbox="28.25,-15.50,28.40,-15.30")
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(self.ids(res), {self.kabulonga.id, self.roma.id})
+        self.assertEqual(res.data["count"], 2)
+        self.assertFalse(res.data["truncated"])
+
+    def test_pending_and_unpinned_listings_never_returned(self):
+        res = self.search(bbox="-180,-90,180,90")
+        self.assertNotIn(self.pending.id, self.ids(res))
+        self.assertNotIn(self.no_coords.id, self.ids(res))
+
+    def test_attribute_filters_combine(self):
+        res = self.search(bbox="-180,-90,180,90", kind="rent", max_price="4000")
+        self.assertEqual(self.ids(res), {self.far.id})
+
+        res = self.search(bbox="-180,-90,180,90", bedrooms=3)
+        self.assertEqual(self.ids(res), {self.roma.id, self.far.id})
+
+        res = self.search(bbox="-180,-90,180,90", neighbourhood="kabulonga")
+        self.assertEqual(self.ids(res), {self.kabulonga.id})
+
+    def test_invalid_bbox_and_price_range_rejected(self):
+        self.assertEqual(self.search(bbox="a,b,c,d").status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self.search(bbox="28.4,-15.5,28.2,-15.3").status_code, status.HTTP_400_BAD_REQUEST)
+        res = self.search(bbox="-180,-90,180,90", min_price="5000", max_price="100")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
