@@ -1,28 +1,21 @@
 from rest_framework.permissions import BasePermission
 
-from .models import UserProfile
+from .services import is_active_provider
 
 
-def get_profile(user):
-    """Return the user's profile, creating a default seeker profile if none exists."""
-    profile, _ = UserProfile.objects.get_or_create(
-        user=user,
-        defaults={"role": UserProfile.ROLE_USER, "user_type": UserProfile.TYPE_GENERAL},
-    )
-    return profile
+class IsApprovedProvider(BasePermission):
+    """Approved and not suspended. Pending, rejected and suspended providers are refused."""
 
-
-class IsProvider(BasePermission):
-    message = "Only provider accounts can do this."
+    message = "Provider tools need an approved, active provider account."
 
     def has_permission(self, request, view):
         user = request.user
-        return bool(user and user.is_authenticated and get_profile(user).is_provider)
+        return bool(user and user.is_authenticated and is_active_provider(user))
 
 
-class IsStudent(BasePermission):
-    message = "Only student accounts can do this."
+class IsPlatformAdmin(BasePermission):
+    message = "Only Nyumba administrators can do this."
 
     def has_permission(self, request, view):
         user = request.user
-        return bool(user and user.is_authenticated and get_profile(user).is_student)
+        return bool(user and user.is_authenticated and user.is_active and user.is_staff)

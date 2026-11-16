@@ -1,89 +1,137 @@
-// Filter state lives in the URL, so every search is shareable and survives a refresh.
-import { LUSAKA_NEIGHBOURHOODS, type ListingKind } from "@/lib/listings";
+// Property search filters live in the URL, so a search can be shared and survives a refresh.
+import type { ListingKind } from "@/lib/types";
 
 export type SortKey = "newest" | "price-asc" | "price-desc";
 
 export type ListingFilters = {
-  kind: "all" | ListingKind;
-  area: string; // "" means all of Lusaka
-  beds: number; // 0 means any; otherwise a minimum
-  maxPrice: number; // ZMW; 0 means any
+  q: string;
+  town: string;
+  kind: "" | ListingKind;
+  type: string;
+  beds: number;
+  baths: number;
+  minPrice: number;
+  maxPrice: number;
+  minSize: number;
+  maxSize: number;
+  furnishing: string;
+  availableBy: string;
+  amenities: string[];
+  instant: boolean;
+  verified: boolean;
   sort: SortKey;
+  area: boolean; // limit results to the visible map area
 };
 
 export const DEFAULT_FILTERS: ListingFilters = {
-  kind: "all",
-  area: "",
+  q: "",
+  town: "Lusaka",
+  kind: "",
+  type: "",
   beds: 0,
+  baths: 0,
+  minPrice: 0,
   maxPrice: 0,
+  minSize: 0,
+  maxSize: 0,
+  furnishing: "",
+  availableBy: "",
+  amenities: [],
+  instant: false,
+  verified: false,
   sort: "newest",
+  area: true,
 };
 
-export const KIND_OPTIONS: { value: ListingFilters["kind"]; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "rent", label: "Rent" },
-  { value: "sale", label: "Sale" },
-  { value: "stay", label: "Short stay" },
-];
+export const TOWNS = ["Lusaka", "Kitwe", "Ndola", "Livingstone", "Kabwe", "Chingola", "Solwezi"];
+export const AMENITY_OPTIONS = ["Borehole", "Solar backup", "Wi-Fi", "Parking", "Security", "Garden", "DSTV", "Water tank"];
 
-export const BED_OPTIONS = [0, 1, 2, 3, 4].map((n) => ({
-  value: n,
-  label: n === 0 ? "Any beds" : `${n}+ beds`,
-}));
+const num = (v: string | null) => {
+  const n = Number(v ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+};
 
-export const PRICE_OPTIONS = [
-  { value: 0, label: "Any price" },
-  { value: 2500, label: "Up to ZMW 2,500" },
-  { value: 5000, label: "Up to ZMW 5,000" },
-  { value: 10000, label: "Up to ZMW 10,000" },
-  { value: 25000, label: "Up to ZMW 25,000" },
-  { value: 100000, label: "Up to ZMW 100,000" },
-  { value: 500000, label: "Up to ZMW 500,000" },
-  { value: 2000000, label: "Up to ZMW 2,000,000" },
-];
-
-export const SORT_OPTIONS: { value: SortKey; label: string }[] = [
-  { value: "newest", label: "Newest" },
-  { value: "price-asc", label: "Price: low to high" },
-  { value: "price-desc", label: "Price: high to low" },
-];
-
-const KINDS = new Set<string>(["rent", "sale", "stay"]);
-const SORTS = new Set<string>(SORT_OPTIONS.map((o) => o.value));
-
-// Read filters from the URL, ignoring anything we don't recognise.
 export function parseFilters(params: URLSearchParams): ListingFilters {
-  const kindParam = params.get("kind") ?? "";
-  const areaParam = params.get("area") ?? "";
-  const bedsParam = Number(params.get("beds") ?? 0);
-  const priceParam = Number(params.get("max") ?? 0);
-  const sortParam = params.get("sort") ?? "";
-
+  const kind = params.get("kind") ?? "";
+  const sort = params.get("sort") ?? "";
   return {
-    kind: KINDS.has(kindParam) ? (kindParam as ListingKind) : "all",
-    area: (LUSAKA_NEIGHBOURHOODS as readonly string[]).includes(areaParam) ? areaParam : "",
-    beds: Number.isInteger(bedsParam) && bedsParam >= 0 && bedsParam <= 4 ? bedsParam : 0,
-    maxPrice: PRICE_OPTIONS.some((o) => o.value === priceParam && o.value > 0) ? priceParam : 0,
-    sort: SORTS.has(sortParam) ? (sortParam as SortKey) : "newest",
+    q: (params.get("q") ?? "").slice(0, 100),
+    town: params.get("town") ?? DEFAULT_FILTERS.town,
+    kind: ["rent", "sale", "stay"].includes(kind) ? (kind as ListingKind) : "",
+    type: params.get("type") ?? "",
+    beds: Math.min(num(params.get("beds")), 6),
+    baths: Math.min(num(params.get("baths")), 5),
+    minPrice: num(params.get("min")),
+    maxPrice: num(params.get("max")),
+    minSize: num(params.get("minsize")),
+    maxSize: num(params.get("maxsize")),
+    furnishing: params.get("furnishing") ?? "",
+    availableBy: /^\d{4}-\d{2}-\d{2}$/.test(params.get("by") ?? "") ? params.get("by")! : "",
+    amenities: (params.get("amenities") ?? "").split(",").filter((a) => AMENITY_OPTIONS.includes(a)),
+    instant: params.get("instant") === "1",
+    verified: params.get("verified") === "1",
+    sort: ["price-asc", "price-desc"].includes(sort) ? (sort as SortKey) : "newest",
+    area: params.get("area") !== "0",
   };
 }
 
-// Serialise only non-default values, so the default view has a clean URL.
-export function filtersToQuery(filters: ListingFilters): string {
-  const params = new URLSearchParams();
-  if (filters.kind !== "all") params.set("kind", filters.kind);
-  if (filters.area) params.set("area", filters.area);
-  if (filters.beds > 0) params.set("beds", String(filters.beds));
-  if (filters.maxPrice > 0) params.set("max", String(filters.maxPrice));
-  if (filters.sort !== "newest") params.set("sort", filters.sort);
-  return params.toString();
+export function filtersToQuery(f: ListingFilters): string {
+  const p = new URLSearchParams();
+  if (f.q) p.set("q", f.q);
+  if (f.town !== DEFAULT_FILTERS.town) p.set("town", f.town);
+  if (f.kind) p.set("kind", f.kind);
+  if (f.type) p.set("type", f.type);
+  if (f.beds) p.set("beds", String(f.beds));
+  if (f.baths) p.set("baths", String(f.baths));
+  if (f.minPrice) p.set("min", String(f.minPrice));
+  if (f.maxPrice) p.set("max", String(f.maxPrice));
+  if (f.minSize) p.set("minsize", String(f.minSize));
+  if (f.maxSize) p.set("maxsize", String(f.maxSize));
+  if (f.furnishing) p.set("furnishing", f.furnishing);
+  if (f.availableBy) p.set("by", f.availableBy);
+  if (f.amenities.length) p.set("amenities", f.amenities.join(","));
+  if (f.instant) p.set("instant", "1");
+  if (f.verified) p.set("verified", "1");
+  if (f.sort !== "newest") p.set("sort", f.sort);
+  if (!f.area) p.set("area", "0");
+  return p.toString();
 }
 
-export function countActiveFilters(filters: ListingFilters): number {
-  return [
-    filters.kind !== "all",
-    filters.area !== "",
-    filters.beds > 0,
-    filters.maxPrice > 0,
-  ].filter(Boolean).length;
+export type Bounds = { west: number; south: number; east: number; north: number };
+
+// What the Django search endpoint expects.
+export function toApiQuery(f: ListingFilters, bounds: Bounds | null): string {
+  const p = new URLSearchParams();
+  if (f.area && bounds) {
+    p.set("bbox", [bounds.west, bounds.south, bounds.east, bounds.north].map((n) => n.toFixed(5)).join(","));
+  } else if (f.town) {
+    p.set("town", f.town);
+  }
+  if (f.q) p.set("q", f.q);
+  if (f.kind) p.set("kind", f.kind);
+  if (f.type) p.set("property_type", f.type);
+  if (f.beds) p.set("bedrooms", String(f.beds));
+  if (f.baths) p.set("bathrooms", String(f.baths));
+  if (f.minPrice) p.set("min_price", String(f.minPrice));
+  if (f.maxPrice) p.set("max_price", String(f.maxPrice));
+  if (f.minSize) p.set("min_size", String(f.minSize));
+  if (f.maxSize) p.set("max_size", String(f.maxSize));
+  if (f.furnishing) p.set("furnishing", f.furnishing);
+  if (f.availableBy) p.set("available_by", f.availableBy);
+  if (f.amenities.length) p.set("amenities", f.amenities.join(","));
+  if (f.instant) p.set("instant", "true");
+  if (f.verified) p.set("verified", "true");
+  p.set("sort", f.sort);
+  return p.toString();
 }
+
+export const TOWN_CENTRES: Record<string, [number, number, number]> = {
+  // lng, lat, zoom
+  Lusaka: [28.3, -15.41, 11.6],
+  Kitwe: [28.22, -12.81, 12],
+  Ndola: [28.64, -12.97, 12],
+  Livingstone: [25.86, -17.85, 12.5],
+  Kabwe: [28.45, -14.44, 12.5],
+  Chingola: [27.85, -12.53, 12.5],
+  Solwezi: [26.39, -12.18, 12.5],
+};

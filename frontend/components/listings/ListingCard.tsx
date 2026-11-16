@@ -1,70 +1,144 @@
-import Link from "next/link";
-import { BedDouble, Home, MapPin, ShieldCheck } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { buttonVariants } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { cn } from "@/lib/utils";
-import { KIND_META, formatZMW, type Listing } from "@/lib/listings";
+"use client";
 
-export function ListingCard({ listing }: { listing: Listing }) {
+import Link from "next/link";
+import { Bath, BedDouble, Heart, Home, Maximize2, ShieldCheck, Star, Zap } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { useFavourites } from "@/lib/favourites";
+import { KIND_LABEL, PRICE_SUFFIX, kwacha, kwachaShort } from "@/lib/format";
+import type { Listing } from "@/lib/types";
+import { Fact, buttonClass } from "@/components/kit";
+
+export function HeartButton({
+  saved,
+  onToggle,
+  label,
+  className,
+}: {
+  saved: boolean;
+  onToggle: () => void;
+  label: string;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onToggle();
+      }}
+      aria-pressed={saved}
+      aria-label={saved ? `Remove ${label} from favourites` : `Save ${label} to favourites`}
+      className={cn(
+        "grid size-9 place-items-center rounded-full bg-surface/95 shadow-sm transition-transform active:scale-90",
+        className
+      )}
+    >
+      <Heart className={cn("size-[18px]", saved ? "fill-heart text-heart" : "text-muted-ink")} />
+    </button>
+  );
+}
+
+export function CoverImage({ src, alt, className }: { src?: string; alt: string; className?: string }) {
+  if (!src) {
+    return (
+      <div className={cn("grid place-items-center bg-gradient-to-br from-info-soft to-subtle", className)}>
+        <Home className="size-8 text-marker/40" aria-hidden />
+        <span className="sr-only">No photo yet</span>
+      </div>
+    );
+  }
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={src} alt={alt} loading="lazy" className={cn("object-cover", className)} />;
+}
+
+export function ListingCard({
+  listing,
+  active,
+  onHover,
+}: {
+  listing: Listing;
+  active?: boolean;
+  onHover?: (id: number | null) => void;
+}) {
+  const { listingIds, toggle } = useFavourites();
   const { property } = listing;
-  const kind = KIND_META[listing.kind];
+  const saved = listingIds.has(listing.id);
   const verified = property.owner_verified && property.property_verified;
+  const href = `/listings/${listing.id}`;
 
   return (
-    <Card className="group gap-0 p-0 ring-foreground/10 transition hover:-translate-y-0.5 hover:shadow-md">
-      {/* Photo area: real photos arrive with the photo upload feature */}
-      <div className="relative flex aspect-[4/3] items-center justify-center bg-gradient-to-br from-primary/10 via-secondary to-accent/60">
-        <Home className="size-8 text-primary/40" aria-hidden />
-        <span className="sr-only">Photo coming soon</span>
-
-        <Badge className="absolute top-2 left-2 bg-card/95 text-primary shadow-sm">
-          {kind.label}
-        </Badge>
-
-        {verified && (
-          <Badge className="absolute top-2 right-2 bg-card/95 text-emerald-800 shadow-sm">
-            <ShieldCheck className="size-3" aria-hidden /> Verified
-          </Badge>
-        )}
+    <article
+      id={`result-${listing.id}`}
+      onMouseEnter={() => onHover?.(listing.id)}
+      onMouseLeave={() => onHover?.(null)}
+      className={cn(
+        "group overflow-hidden rounded-2xl border bg-surface transition-[border-color,box-shadow]",
+        active ? "border-marker shadow-[0_0_0_3px_var(--marker-soft)]" : "border-line"
+      )}
+    >
+      <div className="relative">
+        <Link href={href} tabIndex={-1} aria-hidden>
+          <CoverImage src={property.images[0]?.url} alt="" className="aspect-[5/4] w-full" />
+        </Link>
+        <div className="absolute top-3 left-3 flex flex-wrap gap-1.5">
+          {listing.booking_mode === "instant" && listing.kind !== "sale" && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-surface/95 px-2.5 py-1 text-xs font-semibold text-ink">
+              <Zap className="size-3.5 text-marker" aria-hidden /> Instant booking
+            </span>
+          )}
+        </div>
+        <HeartButton saved={saved} onToggle={() => toggle({ listingId: listing.id })} label={property.title} className="absolute top-3 right-3" />
       </div>
 
-      <div className="flex flex-1 flex-col gap-2 p-3 sm:p-4">
-        <p className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-          <MapPin className="size-3 shrink-0" aria-hidden />
-          <span className="truncate">{property.neighbourhood || "Lusaka"}</span>
-        </p>
-
-        <h2 className="line-clamp-1 text-sm font-semibold text-primary sm:text-base">
-          {property.title}
-        </h2>
-
-        <div className="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-1 rounded-md bg-secondary px-2 py-0.5">
-            <BedDouble className="size-3" aria-hidden />
-            {property.bedrooms} bed{property.bedrooms === 1 ? "" : "s"}
-          </span>
-        </div>
-
-        <div className="mt-auto flex items-end justify-between gap-2 border-t border-border pt-3">
-          <p className="text-sm font-bold text-primary sm:text-base">
-            {formatZMW(listing.price)}
-            {kind.priceSuffix && (
-              <span className="text-xs font-medium text-muted-foreground">
-                {" "}
-                {kind.priceSuffix}
-              </span>
-            )}
+      <div className="p-4">
+        <div className="flex items-center justify-between gap-2">
+          <p className="truncate text-[13px] text-muted-ink">
+            {property.neighbourhood ? `${property.neighbourhood}, ${property.town}` : property.address}
           </p>
-          <Link
-            href={`/properties/${listing.id}`}
-            className={cn(buttonVariants({ size: "sm" }), "shrink-0")}
-          >
-            View
-            <span className="sr-only"> {property.title}</span>
+          {listing.rating.average ? (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-xs font-semibold text-ink-2">
+              <Star className="size-3 fill-star text-star" aria-hidden /> {listing.rating.average}
+            </span>
+          ) : verified ? (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-0.5 text-xs font-semibold text-ok">
+              <ShieldCheck className="size-3" aria-hidden /> Verified
+            </span>
+          ) : null}
+        </div>
+        <h3 className="mt-1 truncate text-base font-semibold text-ink">
+          <Link href={href} className="hover:underline">
+            {property.title}
           </Link>
+        </h3>
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          <Fact icon={BedDouble}>
+            <b className="font-semibold text-ink">{property.bedrooms}</b> Bed
+          </Fact>
+          <Fact icon={Bath}>
+            <b className="font-semibold text-ink">{property.bathrooms}</b> Bath
+          </Fact>
+          {property.size_sqm ? (
+            <Fact icon={Maximize2}>
+              <b className="font-semibold text-ink">{property.size_sqm}</b> m²
+            </Fact>
+          ) : null}
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <Link href={href} className={buttonClass("primary", "sm", "px-4")}>
+            View details<span className="sr-only">: {property.title}</span>
+          </Link>
+          <p className="text-right">
+            <span className="block text-xl font-bold tracking-tight text-ink tabular-nums">
+              {listing.kind === "sale" ? kwachaShort(listing.price) : kwacha(listing.price)}
+            </span>
+            <span className="text-xs text-muted-ink">
+              {KIND_LABEL[listing.kind]}
+              {PRICE_SUFFIX[listing.kind] && ` · ${PRICE_SUFFIX[listing.kind].slice(1)}`}
+            </span>
+          </p>
         </div>
       </div>
-    </Card>
+    </article>
   );
 }

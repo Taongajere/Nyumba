@@ -3,73 +3,165 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Nyumba brand: deep green primary, gold accent, warm off-white canvas. */
+/*
+  Nyumba design tokens, taken from the reference marketplace layout:
+  white working canvas on a cool grey page, navy-ink type and pill buttons,
+  blue map markers, red save heart, hairline grey borders, generous radii.
+*/
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-geist-sans);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-gold: var(--gold);
-  --color-destructive: var(--destructive);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
+  --font-sans: var(--font-jakarta);
+  --font-heading: var(--font-jakarta);
+
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-subtle: var(--subtle);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted-ink: var(--muted-ink);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-navy: var(--navy);
+  --color-navy-hover: var(--navy-hover);
+  --color-marker: var(--marker);
+  --color-marker-soft: var(--marker-soft);
+  --color-heart: var(--heart);
+  --color-heart-soft: var(--heart-soft);
+  --color-star: var(--star);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-info-soft: var(--info-soft);
+
+  /* shadcn/ui names, mapped onto the same palette */
+  --color-background: var(--page);
+  --color-foreground: var(--ink);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--ink);
+  --color-primary: var(--navy);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--subtle);
+  --color-secondary-foreground: var(--ink);
+  --color-muted: var(--subtle);
+  --color-muted-foreground: var(--muted-ink);
+  --color-accent: var(--subtle);
+  --color-accent-foreground: var(--ink);
+  --color-destructive: var(--bad);
+  --color-border: var(--line);
+  --color-input: var(--line-strong);
+  --color-ring: var(--marker);
+
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-3xl: 28px;
 }
 
 :root {
-  --background: #faf8f5;
-  --foreground: #133a2a;
-  --card: #ffffff;
-  --card-foreground: #133a2a;
-  --popover: #ffffff;
-  --popover-foreground: #133a2a;
-  --primary: #133a2a;
-  --primary-foreground: #ffffff;
-  --secondary: #f3efe8;
-  --secondary-foreground: #133a2a;
-  --muted: #f3efe8;
-  --muted-foreground: #5f6f66;
-  --accent: #f3efe8;
-  --accent-foreground: #133a2a;
-  --gold: #9a741c;
-  --destructive: #b42318;
-  --border: rgb(19 58 42 / 0.15);
-  --input: rgb(19 58 42 / 0.2);
-  --ring: #133a2a;
-  --radius: 0.75rem;
+  color-scheme: light;
+  --page: #eef0f3;
+  --surface: #ffffff;
+  --subtle: #f5f6f8;
+  --ink: #101828;
+  --ink-2: #344054;
+  --muted-ink: #667085;
+  --line: #e6e8ec;
+  --line-strong: #d0d5dd;
+  --navy: #0f1d33;
+  --navy-hover: #1c2d4a;
+  --marker: #2160e8;
+  --marker-soft: rgb(33 96 232 / 0.16);
+  --heart: #f04438;
+  --heart-soft: #fef0ef;
+  --star: #f5a524;
+  --ok: #067647;
+  --ok-soft: #ecfdf3;
+  --warn: #b54708;
+  --warn-soft: #fffaeb;
+  --bad: #b42318;
+  --bad-soft: #fef3f2;
+  --info-soft: #eff4ff;
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
-  }
-  body {
-    @apply bg-background text-foreground antialiased;
+    @apply border-line outline-marker/40;
   }
   html {
-    @apply font-sans;
+    @apply font-sans antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+  body {
+    @apply bg-page text-ink;
+  }
+  :focus-visible {
+    outline: 2px solid var(--marker);
+    outline-offset: 2px;
+  }
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }
 
-/* MapLibre's attribution control sits inside the map; keep it readable on the cream canvas. */
+@layer components {
+  /* Rounded white working area that sits on the grey page, like the reference */
+  .canvas {
+    @apply bg-surface sm:rounded-3xl sm:border sm:border-line;
+  }
+  .field {
+    @apply h-11 w-full rounded-xl border border-line-strong bg-surface px-3.5 text-[15px] text-ink placeholder:text-muted-ink/70 transition focus:border-marker focus:ring-4 focus:ring-marker-soft focus:outline-none disabled:bg-subtle;
+  }
+  textarea.field {
+    @apply h-auto py-2.5;
+  }
+  .label {
+    @apply mb-1.5 block text-sm font-semibold text-ink-2;
+  }
+  .hint {
+    @apply mt-1 text-[13px] text-muted-ink;
+  }
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* MapLibre controls restyled to match the white pill controls in the reference */
 .maplibregl-ctrl-attrib {
   font-size: 10px;
+}
+.maplibregl-popup-content {
+  border-radius: 16px !important;
+  padding: 0 !important;
+  box-shadow: 0 12px 32px rgb(16 24 40 / 0.18) !important;
+  overflow: hidden;
+}
+.maplibregl-popup-close-button {
+  font-size: 18px;
+  width: 28px;
+  height: 28px;
+  right: 6px !important;
+  top: 6px !important;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.9) !important;
+  z-index: 2;
 }

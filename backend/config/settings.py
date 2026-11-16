@@ -13,8 +13,14 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 from pathlib import Path
 import os
 
+import dj_database_url
+from dotenv import load_dotenv
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Local secrets (database password, payment keys) live in backend/.env, which git ignores.
+load_dotenv(BASE_DIR / ".env")
 
 
 # Quick-start development settings - unsuitable for production
@@ -79,11 +85,13 @@ WSGI_APPLICATION = "config.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
+# PostgreSQL when DATABASE_URL is set (e.g. postgres://nyumba:secret@localhost:5432/nyumba),
+# otherwise the local SQLite file so a fresh checkout still runs.
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
+    "default": dj_database_url.config(
+        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+        conn_max_age=60,
+    )
 }
 
 
@@ -123,11 +131,23 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+MAX_IMAGE_UPLOAD_BYTES = 5 * 1024 * 1024
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+EMAIL_BACKEND = os.environ.get("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "Nyumba <no-reply@nyumba.local>")
+
+# Where the web app lives; used in password-reset emails and payment redirects.
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+PASSWORD_RESET_TIMEOUT = 60 * 60 * 2  # reset links last two hours
 
 CORS_ALLOWED_ORIGINS = os.environ.get(
     "CORS_ALLOWED_ORIGINS",
@@ -138,12 +158,33 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.TokenAuthentication",
     ],
+    # Everything requires a signed-in user unless a view explicitly opts out.
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "EXCEPTION_HANDLER": "apps.properties.api.common.api_exception_handler",
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
         "anon": "60/min",   # Guests can make up to 60 requests per minute
-        "user": "120/min",  # Logged-in owners get 120 requests per minute
+        "user": "240/min",  # Signed-in users
+        "auth": "10/min",  # Login, registration and password reset, per IP
     },
 }
+
+# --- Payments -------------------------------------------------------------
+# "sandbox" simulates a gateway locally so the whole flow can be tested without keys.
+# "flutterwave" uses Flutterwave Standard checkout; set the keys below in backend/.env.
+PAYMENT_GATEWAY = os.environ.get("PAYMENT_GATEWAY", "sandbox")
+FLUTTERWAVE_SECRET_KEY = os.environ.get("FLUTTERWAVE_SECRET_KEY", "")
+FLUTTERWAVE_WEBHOOK_HASH = os.environ.get("FLUTTERWAVE_WEBHOOK_HASH", "")
+FLUTTERWAVE_BASE_URL = os.environ.get("FLUTTERWAVE_BASE_URL", "https://api.flutterwave.com/v3")
+PAYMENT_CURRENCY = "ZMW"
+# How long an unpaid booking holds dates or a bed before it is released.
+NYUMBA_PAYMENT_HOLD_MINUTES = int(os.environ.get("NYUMBA_PAYMENT_HOLD_MINUTES", "30"))
+# How long a provider has to answer a booking request.
+NYUMBA_REQUEST_RESPONSE_HOURS = int(os.environ.get("NYUMBA_REQUEST_RESPONSE_HOURS", "48"))
+# Guests get a full refund if they cancel a paid booking at least this long before check-in.
+NYUMBA_FREE_CANCEL_HOURS = int(os.environ.get("NYUMBA_FREE_CANCEL_HOURS", "48"))

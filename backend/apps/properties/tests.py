@@ -1,410 +1,812 @@
-from datetime import date
+"""Behaviour tests for Nyumba's rules. Run with:
+    python manage.py test apps.properties.tests
+"""
+
+import re
+from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth.models import User
+from django.core import mail
+from django.core.cache import cache
 from django.test import override_settings
-from rest_framework import status
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import BoardingHouse, BoardingTenancy, Listing, Property, UserProfile
+from . import gateways
+from .models import (
+    BoardingHouse,
+    BoardingRoom,
+    BoardingTenancy,
+    Booking,
+    Commission,
+    CommissionRate,
+    Favourite,
+    Listing,
+    Notification,
+    Payment,
+    Property,
+    ProviderProfile,
+)
 
 PASSWORD = "Sturdy-pass-2026"
-
-# Production hashing (PBKDF2) is deliberately slow; tests use a fast hasher.
-FAST_HASHERS = override_settings(
-    PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"]
+FAST = override_settings(
+    PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"],
+    PAYMENT_GATEWAY="sandbox",
+    FRONTEND_URL="http://testserver-web",
 )
 
 
-@FAST_HASHERS
-class AccountTests(APITestCase):
+class Base(APITestCase):
+    def setUp(self):
+        cache.clear()  # reset rate limits between tests
+        self.admin = User.objects.create_user("admin", "admin@x.test", PASSWORD, is_staff=True)
+
+    # -- helpers -----------------------------------------------------------
     def register(self, username, **extra):
-        payload = {"username": username, "password": PASSWORD, **extra}
-        return self.client.post("/api/register/", payload, format="json")
+        payload = {
+            "username": username,
+            "email": f"{username}@x.test",
+            "password": PASSWORD,
+            "first_name": username.title(),
+            **extra,
+        }
+        return self.client.post("/api/auth/register/", payload, format="json")
 
-    def test_register_provider(self):
-        res = self.register("landlord1", role="provider", business_name="Kabwata Rooms")
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(res.data["role"], "provider")
-        self.assertEqual(res.data["user_type"], "")
-        self.assertEqual(res.data["profile"]["verification_status"], "pending")
-        self.assertEqual(res.data["profile"]["business_name"], "Kabwata Rooms")
-        self.assertIn("token", res.data)
+    def make_user(self, username):
+        res = self.register(username)
+        self.assertEqual(res.status_code, 201, res.data)
+        return User.objects.get(username=username), res.data["token"]
 
-    def test_register_student_requires_institution_and_student_id(self):
-        res = self.register("stud1", role="user", user_type="student")
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("institution", res.data["fields"])
-        self.assertIn("student_id", res.data["fields"])
-
-    def test_register_student_with_details(self):
-        res = self.register(
-            "stud2",
-            role="user",
-            user_type="student",
-            institution="UNZA",
-            student_id="2026-0042",
-            emergency_contact_name="Mum",
-            emergency_contact_phone="+260971000000",
-        )
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(res.data["user_type"], "student")
-        self.assertEqual(res.data["profile"]["institution"], "UNZA")
-
-    def test_general_seeker_defaults(self):
-        res = self.register("seeker1")
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(res.data["role"], "user")
-        self.assertEqual(res.data["user_type"], "general_seeker")
-
-    def test_invalid_role_rejected(self):
-        res = self.register("bad1", role="admin")
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_duplicate_username_rejected(self):
-        self.register("dupe")
-        res = self.register("dupe")
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("already taken", res.data["error"])
-
-    def test_login_returns_role_and_profile(self):
-        self.register("landlord2", role="provider")
-        res = self.client.post(
-            "/api/login/", {"username": "landlord2", "password": PASSWORD}, format="json"
-        )
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(res.data["role"], "provider")
-        self.assertEqual(res.data["profile"]["role"], "provider")
-
-    def test_login_wrong_password(self):
-        self.register("seeker2")
-        res = self.client.post("/api/login/", {"username": "seeker2", "password": "nope"}, format="json")
-        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
-
-    def test_profile_get_and_patch(self):
-        self.register("seeker3")
-        token = self.client.post(
-            "/api/login/", {"username": "seeker3", "password": PASSWORD}, format="json"
-        ).data["token"]
+    def as_user(self, token):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token}")
 
-        res = self.client.patch("/api/profile/", {"phone_number": "+260977000111"}, format="json")
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(res.data["profile"]["phone_number"], "+260977000111")
+    def as_admin(self):
+        self.client.force_authenticate(self.admin)
 
-        # Role is fixed at registration and cannot be changed through the profile endpoint.
-        res = self.client.patch("/api/profile/", {"role": "provider"}, format="json")
-        self.assertEqual(res.data["role"], "user")
+    def logout_client(self):
+        self.client.force_authenticate(None)
+        self.client.credentials()
 
-
-@FAST_HASHERS
-class ProviderPermissionTests(APITestCase):
-    def setUp(self):
-        self.provider = User.objects.create_user("prov", password=PASSWORD)
-        UserProfile.objects.create(user=self.provider, role="provider")
-        self.other_provider = User.objects.create_user("prov2", password=PASSWORD)
-        UserProfile.objects.create(user=self.other_provider, role="provider")
-        self.student = User.objects.create_user("stud", password=PASSWORD)
-        UserProfile.objects.create(
-            user=self.student, role="user", user_type="student", institution="UNZA", student_id="1"
-        )
-        self.seeker = User.objects.create_user("seek", password=PASSWORD)
-        UserProfile.objects.create(user=self.seeker, role="user", user_type="general_seeker")
-
-    def as_user(self, user):
-        self.client.force_authenticate(user=user)
-
-    def test_seeker_cannot_create_listing(self):
-        self.as_user(self.student)
+    def make_provider(self, username):
+        user, token = self.make_user(username)
+        self.as_user(token)
         res = self.client.post(
-            "/api/listings/create/",
-            {"title": "X", "address": "Y", "price": "1000", "kind": "rent"},
+            "/api/provider-applications/",
+            {"provider_type": "landlord", "business_name": f"{username} Homes", "phone_number": "0977000000"},
             format="json",
         )
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertFalse(Property.objects.exists())
+        self.assertEqual(res.status_code, 201, res.data)
+        self.as_admin()
+        res = self.client.post(f"/api/admin/applications/{res.data['id']}/approve/")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.logout_client()
+        return user, token
 
-    def test_provider_creates_listing(self):
-        self.as_user(self.provider)
+    def make_listing(self, token, kind="stay", price="500.00", booking_mode="request", approve=True):
+        self.as_user(token)
         res = self.client.post(
-            "/api/listings/create/",
-            {"title": "Roomy", "address": "Plot 4", "price": "1500.50", "kind": "rent", "bedrooms": 3},
+            "/api/provider/properties/",
+            {
+                "title": f"Kabulonga {kind}",
+                "address": "Plot 1, Lusaka",
+                "neighbourhood": "Kabulonga",
+                "latitude": -15.41,
+                "longitude": 28.31,
+                "bedrooms": 2,
+                "bathrooms": 1,
+                "listing": {"kind": kind, "price": price, "booking_mode": booking_mode},
+            },
             format="json",
         )
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(Property.objects.get().owner, self.provider)
+        self.assertEqual(res.status_code, 201, res.data)
+        listing_id = res.data["listings"][0]["id"]
+        if approve:
+            self.as_admin()
+            self.assertEqual(self.client.post(f"/api/admin/listings/{listing_id}/approve/").status_code, 200)
+        self.logout_client()
+        return Listing.objects.get(pk=listing_id)
 
-    def test_listing_rejects_bad_price_without_500(self):
-        self.as_user(self.provider)
+    def make_boarding_house(self, token, rooms=None, booking_mode="request", approve=True):
+        self.as_user(token)
         res = self.client.post(
-            "/api/listings/create/",
-            {"title": "X", "address": "Y", "price": "-5", "kind": "rent"},
+            "/api/provider/boarding-houses/",
+            {
+                "name": "University Boarding House",
+                "near_institution": "UNZA",
+                "booking_mode": booking_mode,
+                "property": {"title": "UBH", "address": "Great East Rd", "neighbourhood": "Chudleigh", "latitude": -15.39, "longitude": 28.33},
+                "rooms": rooms
+                or [
+                    {"name": "Room 01", "room_type": "dorm", "capacity": 4, "price_per_bed": "800.00"},
+                    {"name": "Room 02", "room_type": "double", "capacity": 2, "price_per_bed": "1000.00"},
+                ],
+            },
             format="json",
         )
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertFalse(Property.objects.exists())
+        self.assertEqual(res.status_code, 201, res.data)
+        house = BoardingHouse.objects.get(pk=res.data["id"])
+        if approve:
+            self.as_admin()
+            self.assertEqual(self.client.post(f"/api/admin/boarding-houses/{house.id}/approve/").status_code, 200)
+        self.logout_client()
+        return house
 
-    def test_dashboard_is_provider_only(self):
-        self.as_user(self.seeker)
-        self.assertEqual(self.client.get("/api/dashboard/").status_code, status.HTTP_403_FORBIDDEN)
-        self.as_user(self.provider)
-        self.assertEqual(self.client.get("/api/dashboard/").status_code, status.HTTP_200_OK)
+    def pay(self, token, booking_id, outcome="successful"):
+        self.as_user(token)
+        res = self.client.post(f"/api/bookings/{booking_id}/pay/")
+        self.assertEqual(res.status_code, 201, res.data)
+        tx_ref = res.data["tx_ref"]
+        res = self.client.post("/api/payments/sandbox/complete/", {"tx_ref": tx_ref, "outcome": outcome}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        return res.data
 
-
-@FAST_HASHERS
-class BoardingHouseTests(APITestCase):
-    def setUp(self):
-        self.provider = User.objects.create_user("owner", password=PASSWORD)
-        UserProfile.objects.create(user=self.provider, role="provider")
-        self.other_provider = User.objects.create_user("owner2", password=PASSWORD)
-        UserProfile.objects.create(user=self.other_provider, role="provider")
-
-        self.student_a = self.make_student("stud_a")
-        self.student_b = self.make_student("stud_b")
-        self.student_c = self.make_student("stud_c")
-
-        self.prop = Property.objects.create(
-            owner=self.provider, title="Kalundu House", address="Plot 12", neighbourhood="Kalundu"
-        )
-        self.house = BoardingHouse.objects.create(
-            property=self.prop, name="Kalundu Boarders", capacity=2, rent_per_bed=Decimal("900.00")
-        )
-
-    def make_student(self, username):
-        user = User.objects.create_user(username, password=PASSWORD)
-        UserProfile.objects.create(
-            user=user, role="user", user_type="student", institution="UNZA", student_id=username
-        )
-        return user
-
-    def make_seeker(self, username):
-        user = User.objects.create_user(username, password=PASSWORD)
-        UserProfile.objects.create(user=user, role="user", user_type="general_seeker")
-        return user
-
-    def as_user(self, user):
-        self.client.force_authenticate(user=user)
-
-    def assign(self, username):
+    def book_stay(self, token, listing, days_ahead=10, nights=3):
+        self.as_user(token)
+        start = timezone.localdate() + timedelta(days=days_ahead)
         return self.client.post(
-            f"/api/provider/boarding-houses/{self.house.id}/tenants/",
-            {"username": username, "term": "2027 S1", "move_in_date": "2027-01-15"},
+            "/api/bookings/",
+            {
+                "listing_id": listing.id,
+                "guest_name": "Guest",
+                "guest_phone": "0977123456",
+                "check_in": str(start),
+                "check_out": str(start + timedelta(days=nights)),
+            },
             format="json",
         )
 
-    def test_provider_creates_boarding_house_for_own_property_only(self):
-        self.as_user(self.provider)
-        other_prop = Property.objects.create(owner=self.other_provider, title="Other", address="Z")
-        res = self.client.post(
-            "/api/provider/boarding-houses/",
-            {"property_id": other_prop.id, "name": "Nope", "capacity": 3},
+    def book_room(self, token, room, months=2):
+        self.as_user(token)
+        return self.client.post(
+            "/api/bookings/",
+            {
+                "room_id": room.id,
+                "guest_name": "Student",
+                "guest_phone": "0977123456",
+                "check_in": str(timezone.localdate() + timedelta(days=5)),
+                "months": months,
+                "institution": "UNZA",
+                "student_id": "2026-01",
+            },
             format="json",
         )
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
 
-        new_prop = Property.objects.create(owner=self.provider, title="Chilenje", address="Plot 9")
+
+# ---------------------------------------------------------------------------
+@FAST
+class AuthenticationTests(Base):
+    def test_register_login_logout(self):
+        user, token = self.make_user("taonga")
+        self.assertEqual(user.email, "taonga@x.test")
+        self.assertTrue(user.password.startswith("md5$"))  # hashed, never raw
+        self.logout_client()
+        res = self.client.post("/api/auth/login/", {"login": "taonga@x.test", "password": PASSWORD}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["user"]["provider_status"], "none")
+        self.as_user(res.data["token"])
+        self.assertEqual(self.client.post("/api/auth/logout/").status_code, 200)
+        self.assertEqual(self.client.get("/api/me/").status_code, 401)
+
+    def test_wrong_password(self):
+        self.make_user("anna")
+        self.logout_client()
+        res = self.client.post("/api/auth/login/", {"login": "anna", "password": "nope"}, format="json")
+        self.assertEqual(res.status_code, 401)
+
+    def test_duplicate_email_and_weak_password(self):
+        self.make_user("dupe")
+        self.assertEqual(self.register("other", email="dupe@x.test").status_code, 400)
+        res = self.register("weak", password="123")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("password", res.data["fields"])
+
+    def test_everything_requires_login(self):
+        for url in ["/api/listings/search/", "/api/boarding-houses/", "/api/favourites/", "/api/bookings/", "/api/me/"]:
+            self.assertEqual(self.client.get(url).status_code, 401, url)
+
+    def test_password_reset_flow(self):
+        user, _ = self.make_user("forgetful")
+        self.logout_client()
+        res = self.client.post("/api/auth/password-reset/", {"email": "forgetful@x.test"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 1)
+        uid, token = re.search(r"uid=([^&]+)&token=(\S+)", mail.outbox[0].body).groups()
         res = self.client.post(
-            "/api/provider/boarding-houses/",
-            {"property_id": new_prop.id, "name": "Chilenje Rooms", "capacity": 4, "rent_per_bed": "850"},
+            "/api/auth/password-reset/confirm/", {"uid": uid, "token": token, "password": "New-sturdy-2027"}, format="json"
+        )
+        self.assertEqual(res.status_code, 200, res.data)
+        # Token can't be reused.
+        res = self.client.post(
+            "/api/auth/password-reset/confirm/", {"uid": uid, "token": token, "password": "Another-one-2028"}, format="json"
+        )
+        self.assertEqual(res.status_code, 400)
+        res = self.client.post("/api/auth/login/", {"login": "forgetful", "password": "New-sturdy-2027"}, format="json")
+        self.assertEqual(res.status_code, 200)
+
+    def test_reset_for_unknown_email_looks_the_same(self):
+        res = self.client.post("/api/auth/password-reset/", {"email": "nobody@x.test"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_suspended_account_cannot_use_api(self):
+        user, token = self.make_user("bad")
+        self.as_admin()
+        self.client.post(f"/api/admin/users/{user.id}/suspend/")
+        self.logout_client()
+        self.as_user(token)
+        self.assertEqual(self.client.get("/api/me/").status_code, 401)
+
+
+# ---------------------------------------------------------------------------
+@FAST
+class ProviderApprovalTests(Base):
+    def test_full_application_lifecycle(self):
+        user, token = self.make_user("landlord")
+        self.as_user(token)
+        # General users can't use provider tools.
+        self.assertEqual(self.client.get("/api/provider/dashboard/").status_code, 403)
+        res = self.client.post(
+            "/api/provider-applications/",
+            {"provider_type": "boarding_house", "business_name": "Chudleigh Rooms", "phone_number": "0977"},
             format="json",
         )
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(res.data["capacity"], 4)
-        self.assertEqual(res.data["spaces_available"], 4)
-
-    def test_seeker_cannot_manage_boarding_houses(self):
-        self.as_user(self.make_seeker("nosy"))
-        res = self.client.get("/api/provider/boarding-houses/")
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
-
-    def test_provider_cannot_see_other_providers_house(self):
-        self.as_user(self.other_provider)
-        res = self.client.get(f"/api/provider/boarding-houses/{self.house.id}/tenants/")
-        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_assign_respects_capacity(self):
-        self.as_user(self.provider)
-        self.assertEqual(self.assign("stud_a").status_code, status.HTTP_201_CREATED)
-        self.assertEqual(self.assign("stud_b").status_code, status.HTTP_201_CREATED)
-        res = self.assign("stud_c")
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("no open bed spaces", res.data["error"])
-
-        summary = self.client.get(f"/api/provider/boarding-houses/{self.house.id}/tenants/").data["summary"]
-        self.assertEqual(summary, {"capacity": 2, "occupied": 2, "available": 0})
-
-    def test_assign_rejects_non_student(self):
-        self.as_user(self.provider)
-        self.make_seeker("walkin")
-        res = self.assign("walkin")
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_capacity_cannot_drop_below_occupancy(self):
-        self.as_user(self.provider)
-        self.assign("stud_a")
-        self.assign("stud_b")
-        res = self.client.patch(
-            f"/api/provider/boarding-houses/{self.house.id}/", {"capacity": 1}, format="json"
-        )
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_student_apply_approve_and_checkout(self):
-        self.as_user(self.student_a)
-        res = self.client.post(
-            f"/api/boarding-houses/{self.house.id}/apply/", {"term": "2027 S1"}, format="json"
-        )
-        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
-        tenancy_id = res.data["tenancy"]["id"]
-        self.assertEqual(res.data["tenancy"]["status"], "requested")
-
-        self.as_user(self.provider)
-        res = self.client.post(f"/api/provider/tenancies/{tenancy_id}/approve/")
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(res.data["tenancy"]["status"], "active")
-        self.assertIsNotNone(res.data["tenancy"]["move_in_date"])
-
-        res = self.client.post(f"/api/provider/tenancies/{tenancy_id}/checkout/")
-        self.assertEqual(res.data["tenancy"]["status"], "checked_out")
-        self.assertEqual(res.data["tenancy"]["student_username"], "stud_a")
-
-        # Once checked out, the bed space is free again.
-        self.assertEqual(self.assign("stud_c").status_code, status.HTTP_201_CREATED)
-
-    def test_approval_blocked_when_house_is_full(self):
-        self.as_user(self.student_a)
-        first = self.client.post(f"/api/boarding-houses/{self.house.id}/apply/", {}, format="json")
-        self.as_user(self.student_b)
-        second = self.client.post(f"/api/boarding-houses/{self.house.id}/apply/", {}, format="json")
-
-        self.as_user(self.provider)
-        self.assertEqual(self.assign("stud_c").status_code, status.HTTP_201_CREATED)
-        res = self.client.post(f"/api/provider/tenancies/{first.data['tenancy']['id']}/approve/")
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        res = self.client.post(f"/api/provider/tenancies/{second.data['tenancy']['id']}/approve/")
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_student_holds_one_open_place_at_a_time(self):
-        other = BoardingHouse.objects.create(
-            property=Property.objects.create(owner=self.provider, title="Second", address="B"),
-            name="Second House",
-            capacity=5,
-        )
-        self.as_user(self.student_a)
+        self.assertEqual(res.status_code, 201)
+        app_id = res.data["id"]
+        # Pending: still can't use provider tools, can't apply twice, can still browse.
+        self.assertEqual(self.client.get("/api/me/").data["provider_status"], "pending")
+        self.assertEqual(self.client.get("/api/provider/dashboard/").status_code, 403)
+        self.assertEqual(self.client.post("/api/me/mode/", {"mode": "provider"}).status_code, 403)
         self.assertEqual(
-            self.client.post(f"/api/boarding-houses/{self.house.id}/apply/", {}, format="json").status_code,
-            status.HTTP_201_CREATED,
+            self.client.post("/api/provider-applications/", {"provider_type": "landlord", "business_name": "x", "phone_number": "1"}).status_code,
+            400,
         )
-        res = self.client.post(f"/api/boarding-houses/{other.id}/apply/", {}, format="json")
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_browse_hides_full_and_inactive_houses(self):
-        self.as_user(self.provider)
-        self.assign("stud_a")
-        self.assign("stud_b")
-
-        self.as_user(self.student_c)
-        self.assertEqual(self.client.get("/api/boarding-houses/").data, [])
-
-        self.as_user(self.provider)
-        self.client.patch(f"/api/provider/boarding-houses/{self.house.id}/", {"capacity": 3}, format="json")
-        self.as_user(self.student_c)
-        houses = self.client.get("/api/boarding-houses/").data
-        self.assertEqual(len(houses), 1)
-        self.assertEqual(houses[0]["spaces_available"], 1)
-
-        self.as_user(self.provider)
-        self.client.patch(f"/api/provider/boarding-houses/{self.house.id}/", {"is_active": False}, format="json")
-        self.as_user(self.student_c)
-        self.assertEqual(self.client.get("/api/boarding-houses/").data, [])
-
-    def test_general_seeker_cannot_apply(self):
-        self.as_user(self.make_seeker("casual"))
-        res = self.client.post(f"/api/boarding-houses/{self.house.id}/apply/", {}, format="json")
-        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
-
-    def test_student_can_cancel_only_their_request(self):
-        self.as_user(self.student_a)
-        res = self.client.post(f"/api/boarding-houses/{self.house.id}/apply/", {}, format="json")
-        tenancy_id = res.data["tenancy"]["id"]
-        res = self.client.post(f"/api/student/tenancies/{tenancy_id}/cancel/")
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(BoardingTenancy.objects.get(id=tenancy_id).status, "cancelled")
-
-        self.as_user(self.student_b)
-        res = self.client.post(f"/api/student/tenancies/{tenancy_id}/cancel/")
-        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_placement_summary_and_payment_tracking(self):
-        self.as_user(self.provider)
-        res = self.assign("stud_a")
-        tenancy_id = res.data["id"]
-
-        res = self.client.patch(
-            f"/api/provider/tenancies/{tenancy_id}/",
-            {"amount_paid": "500.00", "payment_status": "partial"},
+        self.assertEqual(self.client.get("/api/listings/search/").status_code, 200)
+        # Admin rejects with a reason; user sees it and reapplies.
+        self.as_admin()
+        self.assertEqual(self.client.post(f"/api/admin/applications/{app_id}/reject/", {}).status_code, 400)
+        self.client.post(f"/api/admin/applications/{app_id}/reject/", {"reason": "Add a phone number we can call."}, format="json")
+        self.logout_client()
+        self.as_user(token)
+        me = self.client.get("/api/me/").data
+        self.assertEqual(me["provider_status"], "rejected")
+        self.assertEqual(me["latest_application"]["rejection_reason"], "Add a phone number we can call.")
+        res = self.client.post(
+            "/api/provider-applications/",
+            {"provider_type": "boarding_house", "business_name": "Chudleigh Rooms", "phone_number": "0977 111 222"},
             format="json",
         )
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(res.data["payment_status"], "partial")
+        self.assertEqual(res.status_code, 201)
+        # Approve: same account, now can switch to provider tools and back.
+        self.as_admin()
+        self.client.post(f"/api/admin/applications/{res.data['id']}/approve/")
+        self.logout_client()
+        self.as_user(token)
+        me = self.client.post("/api/me/mode/", {"mode": "provider"}).data
+        self.assertEqual(me["active_mode"], "provider")
+        self.assertEqual(self.client.get("/api/provider/dashboard/").status_code, 200)
+        self.assertEqual(self.client.post("/api/me/mode/", {"mode": "marketplace"}).data["active_mode"], "marketplace")
+        self.assertEqual(User.objects.filter(email="landlord@x.test").count(), 1)  # one account
+        self.assertTrue(Notification.objects.filter(user=user, kind="provider_approved").exists())
 
-        self.as_user(self.student_a)
-        placement = self.client.get("/api/student/placement/").data
-        self.assertEqual(placement["active"]["boarding_house_name"], "Kalundu Boarders")
-        self.assertEqual(placement["active"]["balance"], "400.00")
-        self.assertEqual(placement["requests"], [])
+    def test_no_reapply_when_blocked(self):
+        user, token = self.make_user("spammer")
+        self.as_user(token)
+        res = self.client.post("/api/provider-applications/", {"provider_type": "agent", "business_name": "S", "phone_number": "1"})
+        self.as_admin()
+        self.client.post(f"/api/admin/applications/{res.data['id']}/reject/", {"reason": "Fraud", "can_reapply": False}, format="json")
+        self.logout_client()
+        self.as_user(token)
+        res = self.client.post("/api/provider-applications/", {"provider_type": "agent", "business_name": "S", "phone_number": "1"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_suspension_removes_access_and_hides_listings(self):
+        provider, token = self.make_provider("susp")
+        listing = self.make_listing(token)
+        seeker, stoken = self.make_user("seeker")
+        self.as_user(stoken)
+        self.assertEqual(self.client.get("/api/listings/search/").data["count"], 1)
+        self.as_admin()
+        self.assertEqual(self.client.post(f"/api/admin/users/{provider.id}/suspend-provider/", {}).status_code, 400)
+        self.client.post(f"/api/admin/users/{provider.id}/suspend-provider/", {"reason": "Complaints"}, format="json")
+        self.logout_client()
+        self.as_user(token)
+        self.assertEqual(self.client.get("/api/provider/properties/").status_code, 403)
+        self.assertEqual(self.client.get("/api/me/").data["provider_status"], "suspended")
+        self.as_user(stoken)
+        self.assertEqual(self.client.get("/api/listings/search/").data["count"], 0)
+        self.assertEqual(self.client.get(f"/api/listings/{listing.id}/").status_code, 404)
+        # Reinstated: back again.
+        self.as_admin()
+        self.client.post(f"/api/admin/users/{provider.id}/reinstate-provider/")
+        self.logout_client()
+        self.as_user(token)
+        self.assertEqual(self.client.get("/api/provider/properties/").status_code, 200)
+
+    def test_only_admin_reviews_applications(self):
+        _, token = self.make_user("notadmin")
+        self.as_user(token)
+        self.assertEqual(self.client.get("/api/admin/applications/").status_code, 403)
+        self.assertEqual(self.client.get("/api/admin/overview/").status_code, 403)
 
 
-class ListingSearchTests(APITestCase):
-    """GET /api/listings/search/ filters by map bounds and listing attributes."""
+# ---------------------------------------------------------------------------
+@FAST
+class PropertyManagementTests(Base):
+    def test_listing_visibility_rules(self):
+        _, token = self.make_provider("owner")
+        listing = self.make_listing(token, approve=False)
+        _, stoken = self.make_user("viewer")
+        self.as_user(stoken)
+        self.assertEqual(self.client.get("/api/listings/search/").data["count"], 0)  # pending review
+        self.as_admin()
+        self.client.post(f"/api/admin/listings/{listing.id}/approve/")
+        self.as_user(stoken)
+        self.logout_client()
+        self.as_user(stoken)
+        self.assertEqual(self.client.get("/api/listings/search/").data["count"], 1)
+        # Provider unpublishes: gone from search.
+        self.as_user(token)
+        res = self.client.patch(f"/api/provider/listings/{listing.id}/", {"is_published": False}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.as_user(stoken)
+        self.assertEqual(self.client.get("/api/listings/search/").data["count"], 0)
 
+    def test_providers_cannot_touch_each_others_properties(self):
+        _, token_a = self.make_provider("alice")
+        _, token_b = self.make_provider("bob")
+        listing = self.make_listing(token_a)
+        prop_id = listing.property_id
+        self.as_user(token_b)
+        self.assertEqual(self.client.patch(f"/api/provider/properties/{prop_id}/", {"title": "Mine now"}, format="json").status_code, 404)
+        self.assertEqual(self.client.patch(f"/api/provider/listings/{listing.id}/", {"price": "1"}, format="json").status_code, 404)
+        self.assertEqual(self.client.delete(f"/api/provider/properties/{prop_id}/").status_code, 404)
+        self.assertEqual(Property.objects.get(pk=prop_id).title, "Kabulonga stay")
+
+    def test_unapproved_user_cannot_create_listing(self):
+        _, token = self.make_user("eager")
+        self.as_user(token)
+        res = self.client.post("/api/provider/properties/", {"title": "x", "address": "y"}, format="json")
+        self.assertEqual(res.status_code, 403)
+
+    def test_search_filters(self):
+        _, token = self.make_provider("filters")
+        self.make_listing(token, kind="rent", price="3000")
+        self.make_listing(token, kind="sale", price="900000")
+        _, stoken = self.make_user("searcher")
+        self.as_user(stoken)
+        self.assertEqual(self.client.get("/api/listings/search/?kind=rent").data["count"], 1)
+        self.assertEqual(self.client.get("/api/listings/search/?max_price=5000").data["count"], 1)
+        self.assertEqual(self.client.get("/api/listings/search/?bedrooms=3").data["count"], 0)
+        self.assertEqual(self.client.get("/api/listings/search/?bbox=28.0,-15.6,28.5,-15.2").data["count"], 2)
+        self.assertEqual(self.client.get("/api/listings/search/?min_price=10&max_price=1").status_code, 400)
+
+
+# ---------------------------------------------------------------------------
+@FAST
+class BoardingHouseTests(Base):
     def setUp(self):
-        owner = User.objects.create_user("agent", password=PASSWORD)
-        UserProfile.objects.create(user=owner, role="provider")
+        super().setUp()
+        self.provider, self.token = self.make_provider("ubh")
+        self.house = self.make_boarding_house(self.token)
+        self.room1 = self.house.rooms.get(name="Room 01")
+        self.room2 = self.house.rooms.get(name="Room 02")
 
-        def make(title, lat, lng, neighbourhood, bedrooms, kind, price, status="approved"):
-            prop = Property.objects.create(
-                owner=owner, title=title, address="Plot", neighbourhood=neighbourhood,
-                bedrooms=bedrooms, latitude=lat, longitude=lng,
-            )
-            return Listing.objects.create(property=prop, kind=kind, price=Decimal(price), status=status)
+    def register_occupant(self, room, name, **extra):
+        self.as_user(self.token)
+        return self.client.post(
+            f"/api/provider/boarding-houses/{self.house.id}/occupants/",
+            {"room_id": room.id, "occupant_name": name, **extra},
+            format="json",
+        )
 
-        # Coordinates roughly around Lusaka.
-        self.kabulonga = make("Kabulonga flat", -15.4300, 28.3200, "Kabulonga", 2, "rent", "4500")
-        self.roma = make("Roma house", -15.3950, 28.3150, "Roma", 4, "sale", "950000")
-        self.far = make("Kitwe house", -12.8000, 28.2000, "Kitwe", 3, "rent", "3000")
-        self.pending = make("Pending flat", -15.4100, 28.3000, "Kabulonga", 1, "rent", "2000", status="pending")
-        self.no_coords = make("No pin", None, None, "Olympia", 1, "rent", "1000")
+    def test_occupancy_is_calculated_and_capacity_enforced(self):
+        for i in range(3):
+            self.assertEqual(self.register_occupant(self.room1, f"Student {i}").status_code, 201)
+        for i in range(2):
+            self.assertEqual(self.register_occupant(self.room2, f"Pair {i}").status_code, 201)
+        res = self.register_occupant(self.room2, "One too many")
+        self.assertEqual(res.status_code, 409)
+        report = self.client.get(f"/api/provider/boarding-houses/{self.house.id}/report/").data
+        rooms = {r["name"]: r for r in report["rooms"]}
+        self.assertEqual((rooms["Room 01"]["capacity"], rooms["Room 01"]["occupied"], rooms["Room 01"]["available"]), (4, 3, 1))
+        self.assertEqual((rooms["Room 02"]["occupied"], rooms["Room 02"]["available"]), (2, 0))
+        self.assertEqual(report["totals"]["occupancy_rate"], round(5 / 6 * 100, 1))
 
-    def search(self, **params):
-        return self.client.get("/api/listings/search/", params)
+    def test_capacity_cannot_drop_below_occupants(self):
+        self.register_occupant(self.room2, "A")
+        self.register_occupant(self.room2, "B")
+        res = self.client.patch(f"/api/provider/rooms/{self.room2.id}/", {"capacity": 1}, format="json")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(self.client.patch(f"/api/provider/rooms/{self.room2.id}/", {"capacity": 3}, format="json").status_code, 200)
 
-    def ids(self, res):
-        return {item["id"] for item in res.data["results"]}
+    def test_check_out_frees_the_bed(self):
+        a = self.register_occupant(self.room2, "A").data
+        self.register_occupant(self.room2, "B")
+        self.assertEqual(self.register_occupant(self.room2, "C").status_code, 409)
+        self.assertEqual(self.client.post(f"/api/provider/occupants/{a['id']}/check-out/").status_code, 200)
+        self.assertEqual(self.register_occupant(self.room2, "C").status_code, 201)
 
-    def test_bbox_returns_only_listings_inside(self):
-        res = self.search(bbox="28.25,-15.50,28.40,-15.30")
-        self.assertEqual(res.status_code, status.HTTP_200_OK)
-        self.assertEqual(self.ids(res), {self.kabulonga.id, self.roma.id})
-        self.assertEqual(res.data["count"], 2)
-        self.assertFalse(res.data["truncated"])
+    def test_students_only_see_houses_with_space(self):
+        _, stoken = self.make_user("student")
+        self.as_user(stoken)
+        res = self.client.get("/api/boarding-houses/?sharing=shared")
+        self.assertEqual(res.data["count"], 1)
+        for i in range(4):
+            self.register_occupant(self.room1, f"S{i}")
+        for i in range(2):
+            self.register_occupant(self.room2, f"P{i}")
+        self.as_user(stoken)
+        self.assertEqual(self.client.get("/api/boarding-houses/").data["count"], 0)
 
-    def test_pending_and_unpinned_listings_never_returned(self):
-        res = self.search(bbox="-180,-90,180,90")
-        self.assertNotIn(self.pending.id, self.ids(res))
-        self.assertNotIn(self.no_coords.id, self.ids(res))
+    def test_room_filters(self):
+        _, stoken = self.make_user("picky")
+        self.as_user(stoken)
+        res = self.client.get("/api/boarding-houses/?max_price=900")
+        self.assertEqual([r["name"] for r in res.data["results"][0]["rooms"]], ["Room 01"])
+        self.assertEqual(self.client.get("/api/boarding-houses/?sharing=private").data["count"], 0)
 
-    def test_attribute_filters_combine(self):
-        res = self.search(bbox="-180,-90,180,90", kind="rent", max_price="4000")
-        self.assertEqual(self.ids(res), {self.far.id})
+    def test_other_provider_cannot_manage_rooms(self):
+        _, other = self.make_provider("rival")
+        self.as_user(other)
+        self.assertEqual(self.client.get(f"/api/provider/boarding-houses/{self.house.id}/report/").status_code, 404)
+        self.assertEqual(self.client.patch(f"/api/provider/rooms/{self.room1.id}/", {"capacity": 20}, format="json").status_code, 404)
 
-        res = self.search(bbox="-180,-90,180,90", bedrooms=3)
-        self.assertEqual(self.ids(res), {self.roma.id, self.far.id})
 
-        res = self.search(bbox="-180,-90,180,90", neighbourhood="kabulonga")
-        self.assertEqual(self.ids(res), {self.kabulonga.id})
+# ---------------------------------------------------------------------------
+@FAST
+class BookingAndPaymentTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.provider, self.ptoken = self.make_provider("host")
+        self.guest, self.gtoken = self.make_user("guest")
+        CommissionRate.objects.filter(category="stay").update(rate=Decimal("0.12"), processing_fee_rate=Decimal("0.02"))
 
-    def test_invalid_bbox_and_price_range_rejected(self):
-        self.assertEqual(self.search(bbox="a,b,c,d").status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(self.search(bbox="28.4,-15.5,28.2,-15.3").status_code, status.HTTP_400_BAD_REQUEST)
-        res = self.search(bbox="-180,-90,180,90", min_price="5000", max_price="100")
-        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+    def test_request_booking_flow_with_payment_and_commission(self):
+        listing = self.make_listing(self.ptoken, kind="stay", price="500.00")
+        res = self.book_stay(self.gtoken, listing, nights=3)
+        self.assertEqual(res.status_code, 201, res.data)
+        booking = res.data
+        self.assertEqual((booking["status"], booking["total_amount"]), ("pending", "1500.00"))
+        self.assertTrue(Notification.objects.filter(user=self.provider, kind="booking_request").exists())
+        # Can't pay before acceptance.
+        self.as_user(self.gtoken)
+        self.assertEqual(self.client.post(f"/api/bookings/{booking['id']}/pay/").status_code, 400)
+        # Provider accepts.
+        self.as_user(self.ptoken)
+        res = self.client.post(f"/api/provider/bookings/{booking['id']}/accept/", {"note": "Welcome"}, format="json")
+        self.assertEqual(res.data["status"], "awaiting_payment")
+        # Guest pays; backend verifies and confirms.
+        payment = self.pay(self.gtoken, booking["id"])
+        self.assertEqual(payment["status"], "successful")
+        b = Booking.objects.get(pk=booking["id"])
+        self.assertEqual(b.status, "confirmed")
+        c = b.commission
+        self.assertEqual(
+            (c.gross_amount, c.amount, c.processing_fee, c.provider_net, c.status),
+            (Decimal("1500.00"), Decimal("180.00"), Decimal("30.00"), Decimal("1290.00"), "earned"),
+        )
+        # Receipt.
+        receipt = self.client.get(f"/api/payments/{payment['id']}/receipt/").data
+        self.assertEqual(receipt["amount"], "1500.00")
+        # Provider dashboard reflects the money.
+        self.as_user(self.ptoken)
+        dash = self.client.get("/api/provider/dashboard/").data
+        self.assertEqual(dash["money"]["net_revenue"], "1290.00")
+
+    def test_rejection(self):
+        listing = self.make_listing(self.ptoken)
+        booking = self.book_stay(self.gtoken, listing).data
+        self.as_user(self.ptoken)
+        res = self.client.post(f"/api/provider/bookings/{booking['id']}/reject/", {"note": "Closed"}, format="json")
+        self.assertEqual(res.data["status"], "rejected")
+        self.assertTrue(Notification.objects.filter(user=self.guest, kind="booking_rejected").exists())
+
+    def test_instant_booking_and_double_booking_prevention(self):
+        listing = self.make_listing(self.ptoken, booking_mode="instant")
+        res = self.book_stay(self.gtoken, listing, days_ahead=10, nights=3)
+        self.assertEqual(res.data["status"], "awaiting_payment")
+        # Same dates while the first guest's hold is live: refused.
+        _, other = self.make_user("other")
+        self.assertEqual(self.book_stay(other, listing, days_ahead=11, nights=1).status_code, 409)
+        # Adjacent dates are fine.
+        self.assertEqual(self.book_stay(other, listing, days_ahead=13, nights=2).status_code, 201)
+        self.pay(self.gtoken, res.data["id"])
+        self.assertEqual(Booking.objects.get(pk=res.data["id"]).status, "confirmed")
+
+    def test_unpaid_hold_expires_and_releases_dates(self):
+        listing = self.make_listing(self.ptoken, booking_mode="instant")
+        first = self.book_stay(self.gtoken, listing).data
+        Booking.objects.filter(pk=first["id"]).update(payment_due_at=timezone.now() - timedelta(minutes=1))
+        _, other = self.make_user("other")
+        self.assertEqual(self.book_stay(other, listing).status_code, 201)
+        self.assertEqual(Booking.objects.get(pk=first["id"]).status, "cancelled")
+
+    def test_failed_payment_keeps_booking_unpaid(self):
+        listing = self.make_listing(self.ptoken, booking_mode="instant")
+        booking = self.book_stay(self.gtoken, listing).data
+        result = self.pay(self.gtoken, booking["id"], outcome="failed")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(Booking.objects.get(pk=booking["id"]).status, "awaiting_payment")
+
+    def test_payment_cannot_be_settled_twice_or_by_others(self):
+        listing = self.make_listing(self.ptoken, booking_mode="instant")
+        booking = self.book_stay(self.gtoken, listing).data
+        self.as_user(self.gtoken)
+        tx_ref = self.client.post(f"/api/bookings/{booking['id']}/pay/").data["tx_ref"]
+        _, thief = self.make_user("thief")
+        self.as_user(thief)
+        self.assertEqual(
+            self.client.post("/api/payments/sandbox/complete/", {"tx_ref": tx_ref, "outcome": "successful"}).status_code, 404
+        )
+        self.assertEqual(self.client.get(f"/api/bookings/{booking['id']}/").status_code, 404)
+        self.as_user(self.gtoken)
+        self.client.post("/api/payments/sandbox/complete/", {"tx_ref": tx_ref, "outcome": "successful"})
+        again = self.client.post("/api/payments/sandbox/complete/", {"tx_ref": tx_ref, "outcome": "successful"})
+        self.assertEqual(again.status_code, 400)
+        self.assertEqual(Payment.objects.filter(status="successful").count(), 1)
+
+    def test_amount_comes_from_server_not_client(self):
+        listing = self.make_listing(self.ptoken, booking_mode="instant", price="700.00")
+        self.as_user(self.gtoken)
+        start = timezone.localdate() + timedelta(days=3)
+        res = self.client.post(
+            "/api/bookings/",
+            {"listing_id": listing.id, "guest_name": "G", "guest_phone": "0977123456", "check_in": str(start), "check_out": str(start + timedelta(days=2)), "total_amount": "1.00"},
+            format="json",
+        )
+        self.assertEqual(res.data["total_amount"], "1400.00")
+
+    def test_tampered_gateway_amount_is_rejected(self):
+        listing = self.make_listing(self.ptoken, booking_mode="instant")
+        booking = self.book_stay(self.gtoken, listing).data
+        self.as_user(self.gtoken)
+        tx_ref = self.client.post(f"/api/bookings/{booking['id']}/pay/").data["tx_ref"]
+        cheap = gateways.VerifyResult(status="successful", tx_ref=tx_ref, amount=Decimal("1"), currency="ZMW", transaction_id="99")
+        with mock.patch.object(gateways.SandboxGateway, "verify", return_value=cheap):
+            res = self.client.post("/api/payments/verify/", {"tx_ref": tx_ref}, format="json")
+        self.assertEqual(res.data["status"], "failed")
+        self.assertEqual(Booking.objects.get(pk=booking["id"]).status, "awaiting_payment")
+
+    def test_guest_cancellation_refund_policy(self):
+        listing = self.make_listing(self.ptoken, booking_mode="instant")
+        booking = self.book_stay(self.gtoken, listing, days_ahead=10).data
+        self.pay(self.gtoken, booking["id"])
+        self.as_user(self.gtoken)
+        res = self.client.post(f"/api/bookings/{booking['id']}/cancel/")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("refund", res.data["message"])
+        payment = Payment.objects.get(booking_id=booking["id"])
+        self.assertEqual(payment.status, "refunded")
+        self.assertEqual(Commission.objects.get(booking_id=booking["id"]).status, "refunded")
+
+    def test_webhook_requires_secret(self):
+        res = self.client.post("/api/payments/webhooks/flutterwave/", {"data": {"tx_ref": "x"}}, format="json")
+        self.assertEqual(res.status_code, 401)
+
+    def test_sale_listings_are_enquiry_only(self):
+        listing = self.make_listing(self.ptoken, kind="sale", price="900000")
+        self.as_user(self.gtoken)
+        start = timezone.localdate() + timedelta(days=2)
+        res = self.client.post(
+            "/api/bookings/",
+            {"listing_id": listing.id, "guest_name": "G", "guest_phone": "0977123456", "check_in": str(start), "months": 1},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+        res = self.client.post("/api/enquiries/", {"listing_id": listing.id, "name": "G", "phone": "0977", "message": "Viewing?"}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertTrue(Notification.objects.filter(user=self.provider, kind="enquiry").exists())
+
+
+# ---------------------------------------------------------------------------
+@FAST
+class StudentBookingTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.provider, self.ptoken = self.make_provider("bhouse")
+        self.house = self.make_boarding_house(
+            self.ptoken,
+            rooms=[{"name": "Room 01", "room_type": "single", "capacity": 1, "price_per_bed": "900.00"}],
+            booking_mode="instant",
+        )
+        self.room = self.house.rooms.get()
+        self.student, self.stoken = self.make_user("student")
+
+    def test_paid_room_booking_reserves_bed_then_check_in(self):
+        res = self.book_room(self.stoken, self.room, months=2)
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data["total_amount"], "1800.00")
+        # The bed is held while unpaid: a second student can't take it.
+        _, other = self.make_user("other")
+        self.assertEqual(self.book_room(other, self.room).status_code, 409)
+        self.pay(self.stoken, res.data["id"])
+        tenancy = BoardingTenancy.objects.get(student=self.student)
+        self.assertEqual(tenancy.status, "reserved")
+        self.assertEqual(tenancy.institution, "UNZA")
+        self.as_user(self.ptoken)
+        self.client.post(f"/api/provider/occupants/{tenancy.id}/check-in/")
+        report = self.client.get(f"/api/provider/boarding-houses/{self.house.id}/report/").data
+        self.assertEqual((report["totals"]["occupied"], report["totals"]["available"]), (1, 0))
+        self.as_user(self.stoken)
+        self.assertEqual(self.client.get("/api/placement/").data["placement"]["status"], "active")
+        # Check-out completes the booking and allows a review.
+        self.as_user(self.ptoken)
+        self.client.post(f"/api/provider/occupants/{tenancy.id}/check-out/")
+        self.as_user(self.stoken)
+        review = self.client.post(f"/api/bookings/{res.data['id']}/review/", {"rating": 5, "comment": "Clean"}, format="json")
+        self.assertEqual(review.status_code, 201)
+
+    def test_one_bed_per_student(self):
+        self.book_room(self.stoken, self.room)
+        self.as_user(self.ptoken)
+        self.client.patch(f"/api/provider/rooms/{self.room.id}/", {"capacity": 2}, format="json")
+        self.assertEqual(self.book_room(self.stoken, self.room).status_code, 400)
+
+
+# ---------------------------------------------------------------------------
+@FAST
+class FavouritesTests(Base):
+    def test_favourites_belong_to_the_user(self):
+        _, ptoken = self.make_provider("favprov")
+        listing = self.make_listing(ptoken)
+        house = self.make_boarding_house(ptoken)
+        _, a = self.make_user("abel")
+        _, b = self.make_user("bupe")
+        self.as_user(a)
+        self.assertEqual(self.client.post("/api/favourites/", {"listing_id": listing.id}).status_code, 201)
+        self.assertEqual(self.client.post("/api/favourites/", {"listing_id": listing.id}).status_code, 200)  # idempotent
+        self.client.post("/api/favourites/", {"boarding_house_id": house.id})
+        self.assertEqual(len(self.client.get("/api/favourites/").data), 2)
+        self.assertTrue(self.client.get(f"/api/listings/{listing.id}/").data["is_favourite"])
+        self.as_user(b)
+        self.assertEqual(len(self.client.get("/api/favourites/").data), 0)
+        self.as_user(a)
+        self.client.delete(f"/api/favourites/remove/?listing_id={listing.id}")
+        self.assertEqual(Favourite.objects.count(), 1)
+
+
+# ---------------------------------------------------------------------------
+@FAST
+class AdminTests(Base):
+    def test_overview_and_commission_rates(self):
+        self.as_admin()
+        self.assertEqual(self.client.get("/api/admin/overview/").status_code, 200)
+        res = self.client.patch("/api/admin/commission-rates/", {"category": "boarding", "rate": "0.08"}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(CommissionRate.objects.get(category="boarding").rate, Decimal("0.0800"))
+        res = self.client.patch("/api/admin/commission-rates/", {"category": "boarding", "rate": "0.9"}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_payout_settles_earned_commissions(self):
+        provider, ptoken = self.make_provider("payee")
+        listing = self.make_listing(ptoken, booking_mode="instant")
+        _, gtoken = self.make_user("payer")
+        booking = self.book_stay(gtoken, listing).data
+        self.pay(gtoken, booking["id"])
+        self.as_admin()
+        owed = self.client.get("/api/admin/payouts/").data["owed"]
+        self.assertEqual(owed[0]["amount"], "1350.00")
+        res = self.client.post("/api/admin/payouts/", {"provider_id": provider.id, "reference": "MTN-123"}, format="json")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(Commission.objects.get(booking_id=booking["id"]).status, "paid_out")
+        self.assertEqual(self.client.get("/api/admin/payouts/").data["owed"], [])
+
+
+# ---------------------------------------------------------------------------
+@FAST
+class SecurityAndModerationTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.provider, self.ptoken = self.make_provider("ownerx")
+        self.other, self.otoken = self.make_provider("otherx")
+        self.guest, self.gtoken = self.make_user("guestx")
+
+    def test_provider_cannot_decide_another_providers_booking(self):
+        listing = self.make_listing(self.ptoken)
+        booking = self.book_stay(self.gtoken, listing).data
+        self.as_user(self.otoken)
+        self.assertEqual(self.client.post(f"/api/provider/bookings/{booking['id']}/accept/").status_code, 404)
+        self.assertEqual(self.client.get(f"/api/bookings/{booking['id']}/").status_code, 404)
+        self.assertEqual(Booking.objects.get(pk=booking["id"]).status, "pending")
+
+    def test_cannot_book_own_listing_or_pay_someone_elses_booking(self):
+        listing = self.make_listing(self.ptoken, booking_mode="instant")
+        self.assertEqual(self.book_stay(self.ptoken, listing).status_code, 400)
+        booking = self.book_stay(self.gtoken, listing).data
+        self.as_user(self.otoken)
+        self.assertEqual(self.client.post(f"/api/bookings/{booking['id']}/pay/").status_code, 404)
+        self.assertEqual(self.client.post(f"/api/bookings/{booking['id']}/cancel/").status_code, 404)
+
+    def test_removed_listing_disappears_and_cannot_be_booked(self):
+        listing = self.make_listing(self.ptoken, booking_mode="instant")
+        self.as_admin()
+        self.assertEqual(self.client.post(f"/api/admin/listings/{listing.id}/remove/", {}).status_code, 400)  # reason required
+        self.client.post(f"/api/admin/listings/{listing.id}/remove/", {"note": "Fake photos"}, format="json")
+        self.logout_client()
+        self.as_user(self.gtoken)
+        self.assertEqual(self.client.get("/api/listings/search/").data["count"], 0)
+        self.assertEqual(self.book_stay(self.gtoken, listing).status_code, 404)
+        self.as_user(self.ptoken)
+        res = self.client.patch(f"/api/provider/listings/{listing.id}/", {"is_published": True}, format="json")
+        self.assertEqual(res.status_code, 400)
+
+    def test_request_based_room_booking_with_acceptance(self):
+        house = self.make_boarding_house(self.ptoken, rooms=[{"name": "R1", "room_type": "double", "capacity": 2, "price_per_bed": "1000"}])
+        room = house.rooms.get()
+        res = self.book_room(self.gtoken, room)
+        self.assertEqual(res.data["status"], "pending")
+        # Pending requests don't hold the bed, so availability is unchanged until acceptance.
+        self.as_user(self.gtoken)
+        self.assertEqual(self.client.get(f"/api/boarding-houses/{house.id}/").data["totals"]["available"], 2)
+        self.as_user(self.ptoken)
+        self.assertEqual(self.client.post(f"/api/provider/bookings/{res.data['id']}/accept/").data["status"], "awaiting_payment")
+        self.as_user(self.gtoken)
+        self.assertEqual(self.client.get(f"/api/boarding-houses/{house.id}/").data["totals"]["available"], 1)
+        self.pay(self.gtoken, res.data["id"])
+        self.assertEqual(BoardingTenancy.objects.get(booking_id=res.data["id"]).status, "reserved")
+
+    def test_unapproved_or_unpublished_boarding_house_is_hidden(self):
+        house = self.make_boarding_house(self.ptoken, approve=False)
+        self.as_user(self.gtoken)
+        self.assertEqual(self.client.get("/api/boarding-houses/").data["count"], 0)
+        self.assertEqual(self.client.get(f"/api/boarding-houses/{house.id}/").status_code, 404)
+        self.as_admin()
+        self.client.post(f"/api/admin/boarding-houses/{house.id}/approve/")
+        self.logout_client()
+        self.as_user(self.ptoken)
+        self.client.patch(f"/api/provider/boarding-houses/{house.id}/", {"is_active": False}, format="json")
+        self.as_user(self.gtoken)
+        self.assertEqual(self.client.get("/api/boarding-houses/").data["count"], 0)
+
+    def test_users_cannot_read_each_others_notifications_or_payments(self):
+        listing = self.make_listing(self.ptoken, booking_mode="instant")
+        booking = self.book_stay(self.gtoken, listing).data
+        payment = self.pay(self.gtoken, booking["id"])
+        self.as_user(self.otoken)
+        self.assertEqual(self.client.get(f"/api/payments/{payment['id']}/receipt/").status_code, 404)
+        self.assertEqual(self.client.get("/api/payments/").data, [])
+        self.assertFalse(any(n["kind"] == "booking_confirmed" for n in self.client.get("/api/notifications/").data["results"]))
+
+    def test_occupant_registration_never_exceeds_capacity_under_repeated_requests(self):
+        house = self.make_boarding_house(self.ptoken, rooms=[{"name": "Solo", "room_type": "single", "capacity": 1, "price_per_bed": "900"}])
+        room = house.rooms.get()
+        self.as_user(self.ptoken)
+        codes = [
+            self.client.post(f"/api/provider/boarding-houses/{house.id}/occupants/", {"room_id": room.id, "occupant_name": f"P{i}"}, format="json").status_code
+            for i in range(3)
+        ]
+        self.assertEqual(codes, [201, 409, 409])
+        self.assertEqual(BoardingTenancy.objects.filter(room=room, status="active").count(), 1)
+
+
+@FAST
+class ImageUploadTests(Base):
+    def test_upload_validates_type_and_ownership(self):
+        import io
+        import shutil
+        import tempfile
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from PIL import Image
+
+        media = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, media, ignore_errors=True)
+        with override_settings(MEDIA_ROOT=media):
+            _, token = self.make_provider("photog")
+            _, rival = self.make_provider("rivalp")
+            listing = self.make_listing(token)
+            buf = io.BytesIO()
+            Image.new("RGB", (40, 30), "white").save(buf, "JPEG")
+            good = SimpleUploadedFile("house.jpg", buf.getvalue(), content_type="image/jpeg")
+            fake = SimpleUploadedFile("evil.jpg", b"not an image", content_type="image/jpeg")
+            url = f"/api/provider/properties/{listing.property_id}/images/"
+            self.as_user(rival)
+            self.assertEqual(self.client.post(url, {"images": [good]}, format="multipart").status_code, 404)
+            self.as_user(token)
+            self.assertEqual(self.client.post(url, {"images": [fake]}, format="multipart").status_code, 400)
+            good.seek(0)
+            res = self.client.post(url, {"images": [good]}, format="multipart")
+            self.assertEqual(res.status_code, 201, res.data)
+            self.assertEqual(Property.objects.get(pk=listing.property_id).images.count(), 1)
